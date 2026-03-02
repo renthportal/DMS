@@ -435,6 +435,16 @@
 
   <div id="active-alarms"></div>
 
+  <!-- AI CANLI GÖZLEMCI -->
+  <div id="ai-observer" style="border-top:1px solid var(--border);border-bottom:1px solid var(--border);padding:12px 16px;display:flex;flex-direction:column;gap:8px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;">
+      <span style="font-size:10px;letter-spacing:.3em;color:var(--amber);text-transform:uppercase">AI Gözlemci</span>
+      <span id="ai-dot" style="width:6px;height:6px;border-radius:50%;background:var(--muted);display:inline-block"></span>
+    </div>
+    <div id="ai-bubble" style="font-size:12px;line-height:1.6;color:var(--text);min-height:52px;font-style:italic;opacity:0.7">Sistem başlatıldıktan sonra izleme başlar...</div>
+    <button id="ai-speak-btn" onclick="speakLast()" style="display:none;font-family:var(--mono);font-size:9px;letter-spacing:.15em;background:transparent;color:var(--muted);border:1px solid var(--border);padding:2px 8px;cursor:pointer;align-self:flex-start;">🔊 TEKRAR OKU</button>
+  </div>
+
   <div class="section-title" style="padding:10px 16px 6px;font-size:10px;letter-spacing:.3em;color:var(--muted)">ALARM GEÇMİŞİ</div>
   <div id="alert-log"></div>
 
@@ -453,7 +463,7 @@
 const CFG = {
   EAR_THR:       0.20,
   EAR_SEC:       2.5,
-  PERCLOS_WIN:   20,
+  PERCLOS_WIN:   60,
   PERCLOS_THR:   0.20,
   GAZE_THR:      0.20,
   GAZE_SEC:      2.0,
@@ -480,6 +490,7 @@ let eyeClosedAt   = null;
 let yawnAt        = null;
 let gazeAwayAt    = null;
 let headAwayAt    = null;
+let tiredAt       = null;  // YORGUN için zamanlayıcı
 let lastAlarm     = {};
 let lastYolo      = 0;
 let alarmCount    = 0;
@@ -489,43 +500,6 @@ let cocoModel     = null;
 let activeAlarms  = new Set();
 let alarmClearTimers = {};
 let faceMesh, camera;
-
-// ─── OTOMATİK KALİBRASYON ────────────────────────────────────────────────────
-let calib = {
-  isDone:     false,
-  samples:    [],
-  maxSamples: 150,   // ~5-7 saniye
-  baseEAR:    0.22,
-  basePitch:  0,
-  baseYaw:    0
-};
-
-function runAutoCalibration(ear, pitch, yaw) {
-  if (calib.isDone) return;
-  if (ear > 0.15) {
-    calib.samples.push({ ear, pitch, yaw });
-  }
-  const pct = Math.round(calib.samples.length / calib.maxSamples * 100);
-  const el = document.getElementById('live-txt');
-  el.textContent = `KALİBRASYON %${pct}`;
-  el.style.color = 'var(--cyan)';
-
-  if (calib.samples.length >= calib.maxSamples) {
-    const n   = calib.maxSamples;
-    const sum = calib.samples.reduce((a, b) => ({
-      ear:   a.ear   + b.ear,
-      pitch: a.pitch + b.pitch,
-      yaw:   a.yaw   + b.yaw
-    }));
-    calib.baseEAR   = sum.ear   / n;
-    calib.basePitch = sum.pitch / n;
-    calib.baseYaw   = sum.yaw   / n;
-    calib.isDone    = true;
-    el.textContent  = 'SİSTEM AKTİF';
-    el.style.color  = '';
-    addLog('✓ OTOMATİK KALİBRASYON TAMAMLANDI', '#22c55e');
-  }
-}
 
 // ─── UTILS ───────────────────────────────────────────────────────────────────
 const dist = (a, b) => Math.hypot(a[0]-b[0], a[1]-b[1]);
@@ -637,10 +611,10 @@ function triggerPhoneAlarm() {
   activeAlarms.add(type);
   alarmCount++;
   document.getElementById('alarm-count').textContent = alarmCount + ' ihlal';
-  // Telefona özel: 3 kısa bip (farklı ton)
   playBeep(0, 0, [[1200,0.12],[1200,0.12],[1200,0.12]]);
   addLog('📱 TELEFON KULLANIMI', '#ff2d2d');
   updateAlarmUI();
+  triggerAI('Sürücü telefon kullanıyor!', 'urgent');
   clearTimeout(alarmClearTimers[type]);
   alarmClearTimers[type] = setTimeout(() => { activeAlarms.delete(type); updateAlarmUI(); }, 3000);
 }
@@ -656,7 +630,6 @@ function triggerAlarm(type, color) {
   alarmCount++;
   document.getElementById('alarm-count').textContent = alarmCount + ' ihlal';
 
-  // Beep — her alarm tipi farklı
   const beepMap = {
     'UYUYOR':     [[880,0.3],[880,0.3]],
     'YORGUN':     [[660,0.4]],
@@ -666,6 +639,9 @@ function triggerAlarm(type, color) {
   };
   playBeep(0, 0, beepMap[type] || [[660,0.3]]);
 
+  // AI'ı tetikle — alarm tipine göre aciliyet
+  const urgentTypes = ['UYUYOR', 'YORGUN'];
+  triggerAI(`${type} alarmı tetiklendi.`, urgentTypes.includes(type) ? 'urgent' : 'normal');
 
   addLog(type, color);
   updateAlarmUI();
@@ -792,31 +768,11 @@ function onResults(results) {
   const earL = calcEAR(lm, L_EYE, w, h);
   const earR = calcEAR(lm, R_EYE, w, h);
   const ear  = (earL + earR) / 2;
-  const mar  = calcMAR(lm, w, h);
-  const {pitch, yaw} = calcHeadTilt(lm, w, h);
-
-  // OTOMATİK KALİBRASYON — bitene kadar alarm verme
-  if (!calib.isDone) {
-    runAutoCalibration(ear, pitch, yaw);
-    document.getElementById('val-ear').textContent = ear.toFixed(3);
-    return;
-  }
-
-  // DİNAMİK EŞİKLER
-  const dynamicEarThr = calib.baseEAR * 0.75;
-  const pitchAbnormal = pitch < calib.basePitch - 15 || pitch > calib.basePitch + 20;
-  const yawAbnormal   = Math.abs(yaw - calib.baseYaw) > 30;
-
-  // EAR
   document.getElementById('val-ear').textContent = ear.toFixed(3);
-  setMetric('ear', ear, 0, 0.4, dynamicEarThr, false);
+  setMetric('ear', ear, 0, 0.4, CFG.EAR_THR, false);
 
   // PERCLOS
-  perclosBuffer.push(ear < dynamicEarThr ? 1 : 0);
-  // Gözler çok açıksa tamponu hızlı boşalt
-  if (ear > 0.28 && perclosBuffer.length > 10) {
-    perclosBuffer.splice(0, 5);
-  }
+  perclosBuffer.push(ear < CFG.EAR_THR ? 1 : 0);
   const perclos = calcPerclos();
   const pPct = (perclos * 100).toFixed(1);
   document.getElementById('perclos-val').textContent = pPct + '%';
@@ -825,31 +781,24 @@ function onResults(results) {
   pFill.style.background = perclos > CFG.PERCLOS_THR ? 'var(--red)' : 'var(--amber)';
 
   // Uyuklama
-  if (ear < dynamicEarThr) {
+  if (ear < CFG.EAR_THR) {
     if (!eyeClosedAt) eyeClosedAt = nowSec;
     else if (nowSec - eyeClosedAt > CFG.EAR_SEC) triggerAlarm('UYUYOR', '#ef4444');
-  } else {
-    eyeClosedAt = null;
-    if (activeAlarms.has('UYUYOR')) { activeAlarms.delete('UYUYOR'); updateAlarmUI(); }
-  }
+  } else { eyeClosedAt = null; }
 
-  // Yorgunluk
   if (perclos > CFG.PERCLOS_THR) {
-    triggerAlarm('YORGUN', '#f97316');
-  } else {
-    if (activeAlarms.has('YORGUN')) { activeAlarms.delete('YORGUN'); updateAlarmUI(); }
-  }
+    if (!tiredAt) tiredAt = nowSec;
+    else if (nowSec - tiredAt > 5.0) triggerAlarm('YORGUN', '#f97316');
+  } else { tiredAt = null; }
 
   // MAR (esneme)
+  const mar = calcMAR(lm, w, h);
   document.getElementById('val-mar').textContent = mar.toFixed(3);
   setMetric('mar', mar, 0, 1, CFG.MAR_THR);
   if (mar > CFG.MAR_THR) {
     if (!yawnAt) yawnAt = nowSec;
     else if (nowSec - yawnAt > CFG.YAWN_SEC) triggerAlarm('ESNIYOR', '#f59e0b');
-  } else {
-    yawnAt = null;
-    if (activeAlarms.has('ESNIYOR')) { activeAlarms.delete('ESNIYOR'); updateAlarmUI(); }
-  }
+  } else { yawnAt = null; }
 
   // Gaze
   let gaze = 0;
@@ -863,12 +812,13 @@ function onResults(results) {
   if (gaze > CFG.GAZE_THR) {
     if (!gazeAwayAt) gazeAwayAt = nowSec;
     else if (nowSec - gazeAwayAt > CFG.GAZE_SEC) triggerAlarm('UZAK BAKIŞ', '#f97316');
-  } else {
-    gazeAwayAt = null;
-    if (activeAlarms.has('UZAK BAKIŞ')) { activeAlarms.delete('UZAK BAKIŞ'); updateAlarmUI(); }
-  }
+  } else { gazeAwayAt = null; }
 
-  // Baş tilt — dinamik eşikler
+  // Baş tilt
+  const {pitch, yaw} = calcHeadTilt(lm, w, h);
+  const pitchAbnormal = pitch > -15 || pitch < -50;
+  const headDistracted = pitchAbnormal || Math.abs(yaw) > CFG.YAW_THR;
+
   document.getElementById('val-pitch').textContent = pitch.toFixed(1) + '°';
   document.getElementById('val-yaw').textContent   = yaw.toFixed(1) + '°';
   const pitchPct = Math.min(Math.abs(pitch) / 60 * 100, 100);
@@ -876,16 +826,13 @@ function onResults(results) {
   document.getElementById('bar-pitch').style.width      = pitchPct + '%';
   document.getElementById('bar-pitch').style.background = pitchAbnormal ? 'var(--red)' : 'var(--green)';
   document.getElementById('bar-yaw').style.width        = yawPct + '%';
-  document.getElementById('bar-yaw').style.background   = yawAbnormal ? 'var(--red)' : 'var(--green)';
+  document.getElementById('bar-yaw').style.background   = Math.abs(yaw) > CFG.YAW_THR ? 'var(--red)' : 'var(--green)';
   document.getElementById('val-pitch').style.color = pitchAbnormal ? 'var(--red)' : 'var(--green)';
-  document.getElementById('val-yaw').style.color   = yawAbnormal   ? 'var(--red)' : 'var(--green)';
-  if (pitchAbnormal || yawAbnormal) {
+  document.getElementById('val-yaw').style.color   = Math.abs(yaw) > CFG.YAW_THR ? 'var(--red)' : 'var(--green)';
+  if (headDistracted) {
     if (!headAwayAt) headAwayAt = nowSec;
     else if (nowSec - headAwayAt > CFG.POSE_SEC) triggerAlarm('DİKKATSİZ', '#f59e0b');
-  } else {
-    headAwayAt = null;
-    if (activeAlarms.has('DİKKATSİZ')) { activeAlarms.delete('DİKKATSİZ'); updateAlarmUI(); }
-  }
+  } else { headAwayAt = null; }
 
   // Göz noktaları çiz
   ctx.fillStyle = '#06b6d466';
@@ -942,7 +889,138 @@ function onResults(results) {
   }
 }
 
-// ─── BAŞLAT ──────────────────────────────────────────────────────────────────
+// ─── AI CANLI GÖZLEMCİ ───────────────────────────────────────────────────────
+let aiHistory      = [];   // Konuşma geçmişi
+let aiRunning      = false;
+let aiLastTrigger  = 0;
+let aiLastState    = '';
+let lastAiText     = '';
+let aiCooldown     = 8000; // ms — aynı durum için tekrar bekleme
+let aiUrgentCD     = 3000; // acil durumlar için kısa cooldown
+
+const AI_SYSTEM = `Sen bir araç güvenlik görevlisisin. Sürücüyü canlı izliyorsun ve kısa, doğal Türkçe yorumlar yapıyorsun.
+
+KURALLAR:
+- Metrik değerleri (EAR, PERCLOS vb.) ASLA söyleme
+- İnsan gibi konuş: "Gözlerin kapanmaya başladı", "Kafanı kaldır", "Telefonu bırak"
+- Maksimum 1 cümle
+- Geçmiş mesajları hatırla, aynı şeyi tekrarlama
+- Durum normale dönünce kısa olumlu not düş
+- Acil durumlarda sert ve net ol`;
+
+function getStateKey(alarms, ear, perclos) {
+  if (alarms.includes('UYUYOR')) return 'sleeping';
+  if (alarms.includes('TELEFON')) return 'phone';
+  if (alarms.includes('YORGUN') || perclos > 15) return 'drowsy';
+  if (alarms.includes('DİKKATSİZ')) return 'distracted';
+  if (alarms.includes('UZAK BAKIŞ')) return 'gaze';
+  if (alarms.includes('ESNIYOR')) return 'yawn';
+  if (ear > 0.25 && perclos < 5 && alarms.length === 0) return 'ok';
+  return 'neutral';
+}
+
+async function triggerAI(event, urgency = 'normal') {
+  const now = Date.now();
+  const cd  = urgency === 'urgent' ? aiUrgentCD : aiCooldown;
+  if (aiRunning || now - aiLastTrigger < cd) return;
+
+  // Aynı durum tekrarsa geç
+  const alarms  = Array.from(activeAlarms);
+  const earVal  = parseFloat(document.getElementById('val-ear')?.textContent || 0.3);
+  const percVal = parseFloat(document.getElementById('perclos-val')?.textContent || 0);
+  const stateKey = getStateKey(alarms, earVal, percVal);
+  if (stateKey === aiLastState && stateKey === 'ok') return;
+  if (stateKey === aiLastState && urgency !== 'urgent') return;
+
+  aiLastState   = stateKey;
+  aiLastTrigger = now;
+  aiRunning     = true;
+
+  // Dot animasyonu
+  const dot = document.getElementById('ai-dot');
+  dot.style.background = 'var(--amber)';
+  dot.style.animation  = 'pulse 0.5s infinite';
+
+  // Mesaj oluştur
+  const userMsg = `Anlık durum: ${event}. Aktif alarmlar: ${alarms.join(', ') || 'yok'}. Sürücü durumu: ${stateKey}.`;
+
+  aiHistory.push({ role: 'user', content: userMsg });
+  if (aiHistory.length > 10) aiHistory = aiHistory.slice(-10); // son 5 tur
+
+  try {
+    const res = await fetch('/api/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ system: AI_SYSTEM, messages: aiHistory })
+    });
+
+    const data = await res.json();
+    const text = data.content?.[0]?.text || '';
+    if (!text) throw new Error('boş yanıt');
+
+    // Geçmişe ekle
+    aiHistory.push({ role: 'assistant', content: text });
+    lastAiText = text;
+
+    // Bubble'a yaz — harf harf (typing efekti)
+    const bubble = document.getElementById('ai-bubble');
+    bubble.style.opacity = '1';
+    bubble.textContent   = '';
+
+    // Renk — duruma göre
+    if (stateKey === 'sleeping') bubble.style.color = 'var(--red)';
+    else if (stateKey === 'phone') bubble.style.color = '#ff2d2d';
+    else if (stateKey === 'drowsy') bubble.style.color = 'var(--orange)';
+    else if (stateKey === 'ok') bubble.style.color = 'var(--green)';
+    else bubble.style.color = 'var(--amber)';
+
+    // Typing animasyonu
+    let i = 0;
+    const type = setInterval(() => {
+      bubble.textContent += text[i++];
+      if (i >= text.length) {
+        clearInterval(type);
+        document.getElementById('ai-speak-btn').style.display = 'block';
+        dot.style.background = stateKey === 'ok' ? 'var(--green)' : 'var(--amber)';
+        dot.style.animation  = '';
+        // Acil durumlarda otomatik sesli oku
+        if (urgency === 'urgent') speakLast();
+      }
+    }, 28);
+
+  } catch(e) {
+    document.getElementById('ai-bubble').textContent = '...';
+    dot.style.background = 'var(--muted)';
+    dot.style.animation  = '';
+  }
+
+  aiRunning = false;
+}
+
+function speakLast() {
+  if (!lastAiText || !window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+  const utt = new SpeechSynthesisUtterance(lastAiText);
+  utt.lang = 'tr-TR'; utt.rate = 0.9; utt.volume = 1.0;
+  window.speechSynthesis.speak(utt);
+}
+
+// Periyodik normal durum kontrolü
+function startAILoop() {
+  // İlk mesaj
+  setTimeout(() => triggerAI('Sistem devreye girdi, sürücü izleniyor.', 'normal'), 3000);
+
+  setInterval(() => {
+    const alarms = Array.from(activeAlarms);
+    const earVal  = parseFloat(document.getElementById('val-ear')?.textContent || 0.3);
+    const percVal = parseFloat(document.getElementById('perclos-val')?.textContent || 0);
+    const state   = getStateKey(alarms, earVal, percVal);
+
+    if (alarms.length === 0 && state === 'ok') {
+      triggerAI('Sürücü normal, alarmlar yok.', 'normal');
+    }
+  }, 20000); // 20sn'de bir durum normale döndüyse not düş
+}
 async function startSystem() {
   document.getElementById('start-screen').style.display = 'none';
   document.getElementById('loading').style.display = 'flex';
@@ -996,6 +1074,7 @@ async function startSystem() {
   document.getElementById('live-dot').className = 'dot live';
   document.getElementById('live-txt').textContent = 'CANLI';
   startTime = Date.now();
+  startAILoop();
 }
 </script>
 </body>
