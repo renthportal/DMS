@@ -462,9 +462,9 @@ const CFG = {
   POSE_SEC:      3.0,
   MAR_THR:       0.60,
   YAWN_SEC:      2.0,
-  PHONE_CONF:    0.15,   // çok düşük — yan açıda skor düşüyor
+  PHONE_CONF:    0.55,
   ALARM_CD:      5.0,
-  YOLO_INTERVAL: 150,
+  YOLO_INTERVAL: 800,
 };
 
 // Landmark indeksleri
@@ -845,27 +845,15 @@ function onResults(results) {
   if (cocoModel && now - lastYolo > CFG.YOLO_INTERVAL) {
     lastYolo = now;
     cocoModel.detect(canvas).then(predictions => {
-      // Tüm tespitleri göster (debug) — telefon, remote, kitap vb.
-      const phoneClasses = ['cell phone', 'remote', 'book', 'keyboard'];
       for (const p of predictions) {
-        // Debug: tüm nesneleri soluk göster
-        if (p.score > 0.10) {
-          const [bx, by, bw, bh] = p.bbox;
-          ctx.strokeStyle = 'rgba(255,255,0,0.3)';
-          ctx.lineWidth = 1;
-          ctx.strokeRect(bx, by, bw, bh);
-          ctx.fillStyle = 'rgba(255,255,0,0.6)';
-          ctx.font = '10px monospace';
-          ctx.fillText(`${p.class} ${(p.score*100).toFixed(0)}%`, bx+2, by+12);
-        }
-
-        // Telefon veya benzeri nesne — eşik üstündeyse alarm
-        if (phoneClasses.includes(p.class) && p.score > CFG.PHONE_CONF) {
+        if (p.class === 'cell phone' && p.score > CFG.PHONE_CONF) {
           triggerPhoneAlarm();
           const [bx, by, bw, bh] = p.bbox;
+          // Parlak kırmızı çerçeve
           ctx.strokeStyle = '#ff2d2d';
           ctx.lineWidth = 4;
           ctx.strokeRect(bx, by, bw, bh);
+          // Köşe işaretleri
           const cs = 18;
           ctx.lineWidth = 3;
           [[bx,by,1,1],[bx+bw,by,-1,1],[bx,by+bh,1,-1],[bx+bw,by+bh,-1,-1]].forEach(([cx,cy,sx,sy]) => {
@@ -873,11 +861,12 @@ function onResults(results) {
             ctx.moveTo(cx, cy+sy*cs); ctx.lineTo(cx,cy); ctx.lineTo(cx+sx*cs,cy);
             ctx.stroke();
           });
+          // Etiket
           ctx.fillStyle = '#ff2d2d';
-          ctx.fillRect(bx, Math.max(0,by-24), 200, 24);
+          ctx.fillRect(bx, Math.max(0,by-24), 185, 24);
           ctx.fillStyle = '#fff';
           ctx.font = 'bold 13px monospace';
-          ctx.fillText(`📱 ${p.class.toUpperCase()}! %${(p.score*100).toFixed(0)}`, bx+5, Math.max(16,by-6));
+          ctx.fillText(`📱 TELEFON! %${(p.score*100).toFixed(0)}`, bx+5, Math.max(16,by-6));
         }
       }
     });
