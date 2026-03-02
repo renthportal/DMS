@@ -928,23 +928,41 @@ function onResults(results) {
 // ─── BAŞLAT ──────────────────────────────────────────────────────────────────
 // ─── AI ANALİZ ───────────────────────────────────────────────────────────────
 let aiLastCall    = 0;
-let aiInterval    = 30000; // 30 saniyede bir
+let aiInterval    = 15000; // 15 saniyede bir
 let aiRunning     = false;
 let lastAiText    = '';
-let metricsHistory = []; // son 30sn metrikleri
+let metricsHistory = [];
 
 function collectMetrics() {
   return {
-    ear:       parseFloat(document.getElementById('val-ear')?.textContent || 0),
-    gaze:      parseFloat(document.getElementById('val-gaze')?.textContent || 0),
-    mar:       parseFloat(document.getElementById('val-mar')?.textContent || 0),
-    pitch:     parseFloat(document.getElementById('val-pitch')?.textContent || 0),
-    yaw:       parseFloat(document.getElementById('val-yaw')?.textContent || 0),
-    perclos:   parseFloat(document.getElementById('perclos-val')?.textContent || 0),
-    alarms:    alarmCount,
+    ear:      parseFloat(document.getElementById('val-ear')?.textContent || 0),
+    gaze:     parseFloat(document.getElementById('val-gaze')?.textContent || 0),
+    mar:      parseFloat(document.getElementById('val-mar')?.textContent || 0),
+    pitch:    parseFloat(document.getElementById('val-pitch')?.textContent || 0),
+    yaw:      parseFloat(document.getElementById('val-yaw')?.textContent || 0),
+    perclos:  parseFloat(document.getElementById('perclos-val')?.textContent || 0),
+    alarms:   alarmCount,
     activeAlarms: Array.from(activeAlarms),
-    uptime:    document.getElementById('uptime')?.textContent || '00:00:00',
+    ts:       Date.now()
   };
+}
+
+function buildTrend() {
+  if (metricsHistory.length < 2) return null;
+  const old  = metricsHistory[0];
+  const curr = metricsHistory[metricsHistory.length - 1];
+  const durMin = ((curr.ts - old.ts) / 60000).toFixed(1);
+
+  // Alarm hızı: son pencerede kaç alarm
+  const alarmDelta = curr.alarms - old.alarms;
+
+  // Perclos trendi
+  const perclosTrend = curr.perclos - old.perclos;
+
+  // EAR trendi (düşüşü kötü)
+  const earTrend = curr.ear - old.ear;
+
+  return { durMin, alarmDelta, perclosTrend, earTrend, curr, old };
 }
 
 async function runAIAnalysis() {
@@ -953,29 +971,44 @@ async function runAIAnalysis() {
 
   const metrics = collectMetrics();
   metricsHistory.push(metrics);
-  if (metricsHistory.length > 10) metricsHistory.shift();
+  if (metricsHistory.length > 20) metricsHistory.shift();
 
-  document.getElementById('ai-status').textContent = '⟳ analiz ediliyor...';
+  const trend = buildTrend();
 
-  const prompt = `Sen bir araç güvenlik sistemisin. Sürücü izleme verilerini analiz edip kısa, net Türkçe uyarı ver.
+  document.getElementById('ai-status').textContent = '⟳ analiz...';
 
-Anlık Veriler:
-- EAR (göz açıklığı, normal >0.20): ${metrics.ear.toFixed(3)}
-- GAZE (bakış sapması, normal <0.20): ${metrics.gaze.toFixed(3)}  
-- MAR (ağız açıklığı/esneme, normal <0.60): ${metrics.mar.toFixed(3)}
-- PITCH (baş eğimi, normal -50 ile -15): ${metrics.pitch.toFixed(1)}°
-- YAW (baş dönüşü, normal ±35°): ${metrics.yaw.toFixed(1)}°
-- PERCLOS (60sn göz kapanma oranı, normal <%20): ${metrics.perclos}
-- Aktif alarmlar: ${metrics.activeAlarms.length > 0 ? metrics.activeAlarms.join(', ') : 'yok'}
-- Toplam ihlal sayısı: ${metrics.alarms}
-- Çalışma süresi: ${metrics.uptime}
+  // Geçmiş özeti
+  const histSummary = metricsHistory.slice(-6).map((m, i) =>
+    `t-${(metricsHistory.slice(-6).length - 1 - i) * 15}sn: EAR=${m.ear.toFixed(2)} PERCLOS=${m.perclos}% ihlal=${m.alarms}`
+  ).join('\n');
 
-Geçmiş (son ${metricsHistory.length} ölçüm): Perclos ortalaması: ${(metricsHistory.reduce((a,b)=>a+parseFloat(b.perclos||0),0)/metricsHistory.length).toFixed(1)}%
+  const prompt = `Sen araç güvenlik AI sistemisin. Ham metrik değerleri tekrarlama — ÖRÜNTÜ, TREND ve RİSK tahminini analiz et.
 
-Sadece 1-2 cümle, sürücüye yönelik, Türkçe, net uyarı ver. Tehlike seviyesini belirt: [NORMAL], [DİKKAT] veya [TEHLİKE]. Örnek: "[DİKKAT] Göz kapanma oranı artıyor, mola vermenizi öneririz."`;
+=== ANLIK ===
+EAR: ${metrics.ear.toFixed(3)} (göz açıklığı, <0.20 tehlike)
+PERCLOS: ${metrics.perclos}% (göz kapanma oranı, >%20 tehlike)
+GAZE: ${metrics.gaze.toFixed(3)} (bakış sapması, >0.20 dikkat dağınıklığı)
+MAR: ${metrics.mar.toFixed(3)} (esneme, >0.60 yorgunluk)
+Aktif alarm: ${metrics.activeAlarms.join(', ') || 'yok'}
+Toplam ihlal: ${metrics.alarms}
+
+=== TREND (${trend?.durMin || 0} dakika) ===
+${trend ? `- İhlal artış hızı: ${trend.alarmDelta} ihlal/pencere
+- PERCLOS değişimi: ${trend.perclosTrend > 0 ? '+' : ''}${trend.perclosTrend.toFixed(1)}% (${trend.perclosTrend > 2 ? 'ARTIYOR ⚠' : trend.perclosTrend < -2 ? 'azalıyor ✓' : 'stabil'})
+- EAR değişimi: ${trend.earTrend > 0 ? '+' : ''}${trend.earTrend.toFixed(3)} (${trend.earTrend < -0.02 ? 'DÜŞÜYOR ⚠' : 'stabil'})` : 'Yeterli veri yok'}
+
+=== GEÇMİŞ ===
+${histSummary}
+
+GÖREV: Sadece 1-2 cümle. Sürücüye değil, YÖNETİCİYE rapor ver. Şunları yaz:
+1. Risk trendi nasıl gidiyor (artıyor/azalıyor/stabil)
+2. Varsa kritik örüntü veya tahmin
+3. Öneri (mola, kontrol, normal)
+
+Başa [NORMAL], [DİKKAT] veya [TEHLİKE] yaz. Türkçe, kısa, net.`;
 
   try {
-    const res = await fetch('/api/analyze', {
+    const response = await fetch('/api/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -983,17 +1016,15 @@ Sadece 1-2 cümle, sürücüye yönelik, Türkçe, net uyarı ver. Tehlike seviy
       })
     });
 
-    const data = await res.json();
+    const data = await response.json();
     const text = data.content?.[0]?.text || 'Analiz alınamadı.';
     lastAiText = text;
 
     const el = document.getElementById('ai-text');
     el.textContent = text;
 
-    // Renk
     if (text.includes('[TEHLİKE]')) {
       el.className = 'danger';
-      // Otomatik sesli oku
       speakAI();
     } else if (text.includes('[DİKKAT]')) {
       el.className = 'warning';
@@ -1005,7 +1036,7 @@ Sadece 1-2 cümle, sürücüye yönelik, Türkçe, net uyarı ver. Tehlike seviy
     document.getElementById('ai-status').textContent = new Date().toTimeString().slice(0,8);
 
   } catch(e) {
-    document.getElementById('ai-text').textContent = 'AI bağlantı hatası.';
+    document.getElementById('ai-text').textContent = 'AI bağlantı hatası: ' + e.message;
     document.getElementById('ai-status').textContent = 'hata';
   }
 
@@ -1022,12 +1053,11 @@ function speakAI() {
   window.speechSynthesis.speak(utt);
 }
 
-// Her 30 saniyede tetikle
 function startAILoop() {
   runAIAnalysis();
   setInterval(() => {
-    if (document.getElementById('live-dot').classList.contains('live') ||
-        document.getElementById('live-dot').classList.contains('warn')) {
+    const dot = document.getElementById('live-dot');
+    if (dot.classList.contains('live') || dot.classList.contains('warn')) {
       runAIAnalysis();
     }
   }, aiInterval);
