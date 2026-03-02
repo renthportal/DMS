@@ -1000,12 +1000,7 @@ ${trend ? `- İhlal artış hızı: ${trend.alarmDelta} ihlal/pencere
 === GEÇMİŞ ===
 ${histSummary}
 
-GÖREV: Sadece 1-2 cümle. Sürücüye değil, YÖNETİCİYE rapor ver. Şunları yaz:
-1. Risk trendi nasıl gidiyor (artıyor/azalıyor/stabil)
-2. Varsa kritik örüntü veya tahmin
-3. Öneri (mola, kontrol, normal)
-
-Başa [NORMAL], [DİKKAT] veya [TEHLİKE] yaz. Türkçe, kısa, net.`;
+GÖREV: Tek cümle. [NORMAL], [DİKKAT] veya [TEHLİKE] ile başla. Sadece en kritik bulguyu yaz. Türkçe, kısa.`;
 
   try {
     const response = await fetch('/api/analyze', {
