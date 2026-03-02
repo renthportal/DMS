@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Hareket Sürücü Takip Sistemi</title>
+<title>Sürücü İzleme Sistemi</title>
 
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js" crossorigin="anonymous"></script>
@@ -361,8 +361,8 @@
 <body>
 
 <header>
-  <div class="logo">DrIver MonItorIng System<span>/</span>v3</div>
-  <span style="color:var(--muted);font-size:11px;letter-spacing:.2em">HAREKET SÜRÜCÜ TAKİP SİSTEMİ</span>
+  <div class="logo">DMS<span>/</span>v3</div>
+  <span style="color:var(--muted);font-size:11px;letter-spacing:.2em">SÜRÜCÜ İZLEME</span>
   <div class="hdr-status">
     <div class="dot" id="live-dot"></div>
     <span id="live-txt" style="font-family:var(--mono);font-size:11px">HAZIRLANIYOR</span>
@@ -813,6 +813,10 @@ function onResults(results) {
 
   // PERCLOS
   perclosBuffer.push(ear < dynamicEarThr ? 1 : 0);
+  // Gözler çok açıksa tamponu hızlı boşalt
+  if (ear > 0.28 && perclosBuffer.length > 10) {
+    perclosBuffer.splice(0, 5);
+  }
   const perclos = calcPerclos();
   const pPct = (perclos * 100).toFixed(1);
   document.getElementById('perclos-val').textContent = pPct + '%';
@@ -824,9 +828,17 @@ function onResults(results) {
   if (ear < dynamicEarThr) {
     if (!eyeClosedAt) eyeClosedAt = nowSec;
     else if (nowSec - eyeClosedAt > CFG.EAR_SEC) triggerAlarm('UYUYOR', '#ef4444');
-  } else { eyeClosedAt = null; }
+  } else {
+    eyeClosedAt = null;
+    if (activeAlarms.has('UYUYOR')) { activeAlarms.delete('UYUYOR'); updateAlarmUI(); }
+  }
 
-  if (perclos > CFG.PERCLOS_THR) triggerAlarm('YORGUN', '#f97316');
+  // Yorgunluk
+  if (perclos > CFG.PERCLOS_THR) {
+    triggerAlarm('YORGUN', '#f97316');
+  } else {
+    if (activeAlarms.has('YORGUN')) { activeAlarms.delete('YORGUN'); updateAlarmUI(); }
+  }
 
   // MAR (esneme)
   document.getElementById('val-mar').textContent = mar.toFixed(3);
@@ -834,7 +846,10 @@ function onResults(results) {
   if (mar > CFG.MAR_THR) {
     if (!yawnAt) yawnAt = nowSec;
     else if (nowSec - yawnAt > CFG.YAWN_SEC) triggerAlarm('ESNIYOR', '#f59e0b');
-  } else { yawnAt = null; }
+  } else {
+    yawnAt = null;
+    if (activeAlarms.has('ESNIYOR')) { activeAlarms.delete('ESNIYOR'); updateAlarmUI(); }
+  }
 
   // Gaze
   let gaze = 0;
@@ -848,7 +863,10 @@ function onResults(results) {
   if (gaze > CFG.GAZE_THR) {
     if (!gazeAwayAt) gazeAwayAt = nowSec;
     else if (nowSec - gazeAwayAt > CFG.GAZE_SEC) triggerAlarm('UZAK BAKIŞ', '#f97316');
-  } else { gazeAwayAt = null; }
+  } else {
+    gazeAwayAt = null;
+    if (activeAlarms.has('UZAK BAKIŞ')) { activeAlarms.delete('UZAK BAKIŞ'); updateAlarmUI(); }
+  }
 
   // Baş tilt — dinamik eşikler
   document.getElementById('val-pitch').textContent = pitch.toFixed(1) + '°';
@@ -864,7 +882,10 @@ function onResults(results) {
   if (pitchAbnormal || yawAbnormal) {
     if (!headAwayAt) headAwayAt = nowSec;
     else if (nowSec - headAwayAt > CFG.POSE_SEC) triggerAlarm('DİKKATSİZ', '#f59e0b');
-  } else { headAwayAt = null; }
+  } else {
+    headAwayAt = null;
+    if (activeAlarms.has('DİKKATSİZ')) { activeAlarms.delete('DİKKATSİZ'); updateAlarmUI(); }
+  }
 
   // Göz noktaları çiz
   ctx.fillStyle = '#06b6d466';
