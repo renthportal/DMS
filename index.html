@@ -6,7 +6,6 @@
 <title>Sürücü İzleme Sistemi</title>
 
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js" crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/hands.js" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.2/dist/coco-ssd.min.js"></script>
@@ -490,9 +489,6 @@ let cocoModel     = null;
 let activeAlarms  = new Set();
 let alarmClearTimers = {};
 let faceMesh, camera;
-let handsMesh = null;
-let lastHandResult = null;  // el landmark'ları
-let faceBox = null;         // yüz bounding box (kulak konumu için)
 
 // ─── UTILS ───────────────────────────────────────────────────────────────────
 const dist = (a, b) => Math.hypot(a[0]-b[0], a[1]-b[1]);
@@ -802,58 +798,7 @@ function onResults(results) {
     else if (nowSec - gazeAwayAt > CFG.GAZE_SEC) triggerAlarm('UZAK BAKIŞ', '#f97316');
   } else { gazeAwayAt = null; }
 
-  // Yüz kutusunu kaydet (kulak konumu için)
-  faceBox = {
-    leftEarX:  lm[234].x,
-    rightEarX: lm[454].x,
-    earY:      (lm[234].y + lm[454].y) / 2,
-    faceW:     Math.abs(lm[454].x - lm[234].x),
-    faceH:     Math.abs(lm[152].y - lm[10].y),
-  };
-
-  // El kulak yakınında mı? (telefon görünmese bile)
-  if (lastHandResult && lastHandResult.multiHandLandmarks && faceBox) {
-    for (const handLm of lastHandResult.multiHandLandmarks) {
-      // El bileği (0) ve işaret parmağı ucu (8) konumu
-      const wrist     = handLm[0];
-      const indexTip  = handLm[8];
-      const thumbTip  = handLm[4];
-
-      // El ortası Y konumu
-      const handY = (wrist.y + indexTip.y) / 2;
-      // El X konumu
-      const handX = (wrist.x + indexTip.x) / 2;
-
-      // Kulak Y ve X konumu (normalize)
-      const earY = faceBox.earY;
-      const leftEarX  = faceBox.leftEarX;
-      const rightEarX = faceBox.rightEarX;
-
-      // El kulak hizasında mı? (Y ekseninde yakın)
-      const yClose = Math.abs(handY - earY) < faceBox.faceH * 0.6;
-
-      // El kulak X konumuna yakın mı?
-      const nearLeftEar  = Math.abs(handX - leftEarX)  < faceBox.faceW * 0.5;
-      const nearRightEar = Math.abs(handX - rightEarX) < faceBox.faceW * 0.5;
-
-      if (yClose && (nearLeftEar || nearRightEar)) {
-        triggerPhoneAlarm();
-        // El üzerine uyarı çiz
-        const hx = handX * w;
-        const hy = handY * h;
-        ctx.strokeStyle = '#ff2d2d';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(hx, hy, 40, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.fillStyle = '#ff2d2d';
-        ctx.fillRect(hx - 60, hy - 50, 135, 22);
-        ctx.fillStyle = '#fff';
-        ctx.font = 'bold 12px monospace';
-        ctx.fillText('📱 TELEFON GESTİ!', hx - 55, hy - 33);
-      }
-    }
-  }
+  // Baş tilt
   const {pitch, yaw} = calcHeadTilt(lm, w, h);
   const pitchAbnormal = pitch > -15 || pitch < -50;
   const headDistracted = pitchAbnormal || Math.abs(yaw) > CFG.YAW_THR;
@@ -954,23 +899,6 @@ async function startSystem() {
     console.warn('COCO-SSD yüklenemedi:', e);
   }
 
-  // MediaPipe Hands
-  try {
-    handsMesh = new Hands({ locateFile: f =>
-      `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${f}`
-    });
-    handsMesh.setOptions({
-      maxNumHands: 2,
-      modelComplexity: 0,
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5
-    });
-    handsMesh.onResults(r => { lastHandResult = r; });
-    document.getElementById('load-text').textContent = 'EL TAKİBİ YÜKLENİYOR...';
-  } catch(e) {
-    console.warn('Hands yüklenemedi:', e);
-  }
-
   // MediaPipe FaceMesh
   faceMesh = new FaceMesh({ locateFile: f =>
     `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/${f}`
@@ -988,7 +916,6 @@ async function startSystem() {
   camera = new Camera(video, {
     onFrame: async () => {
       await faceMesh.send({ image: video });
-      if (handsMesh) await handsMesh.send({ image: video });
     },
     width: 1280, height: 720
   });
