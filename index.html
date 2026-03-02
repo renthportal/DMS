@@ -805,13 +805,14 @@ function onResults(results) {
   const pitchPct = Math.min(Math.abs(pitch) / 60 * 100, 100);
   const yawPct   = Math.min(Math.abs(yaw)   / 60 * 100, 100);
   document.getElementById('bar-pitch').style.width      = pitchPct + '%';
-  document.getElementById('bar-pitch').style.background = Math.abs(pitch) > CFG.PITCH_THR ? 'var(--red)' : 'var(--green)';
+  document.getElementById('bar-pitch').style.background = pitchAbnormal ? 'var(--red)' : 'var(--green)';
   document.getElementById('bar-yaw').style.width        = yawPct + '%';
   document.getElementById('bar-yaw').style.background   = Math.abs(yaw) > CFG.YAW_THR ? 'var(--red)' : 'var(--green)';
-  document.getElementById('val-pitch').style.color = Math.abs(pitch) > CFG.PITCH_THR ? 'var(--red)' : 'var(--green)';
+  document.getElementById('val-pitch').style.color = pitchAbnormal ? 'var(--red)' : 'var(--green)';
   document.getElementById('val-yaw').style.color   = Math.abs(yaw)   > CFG.YAW_THR ? 'var(--red)' : 'var(--green)';
 
-  const headDistracted = Math.abs(pitch) > CFG.PITCH_THR || Math.abs(yaw) > CFG.YAW_THR;
+  const pitchAbnormal = pitch > -15 || pitch < -50;
+const headDistracted = pitchAbnormal || Math.abs(yaw) > CFG.YAW_THR;
   if (headDistracted) {
     if (!headAwayAt) headAwayAt = nowSec;
     else if (nowSec - headAwayAt > CFG.POSE_SEC) triggerAlarm('DİKKATSİZ', '#f59e0b');
