@@ -356,6 +356,49 @@
     color:var(--muted);
     display:none;
   }
+
+  /* AI Panel */
+  #ai-panel {
+    border-top:1px solid var(--border);
+    padding:12px 16px;
+    display:flex;
+    flex-direction:column;
+    gap:8px;
+  }
+  #ai-panel .section-title {
+    display:flex;
+    align-items:center;
+    gap:8px;
+    margin-bottom:4px;
+  }
+  #ai-status {
+    font-size:9px;
+    letter-spacing:.15em;
+    color:var(--muted);
+    margin-left:auto;
+  }
+  #ai-text {
+    font-size:11px;
+    line-height:1.6;
+    color:var(--text);
+    min-height:48px;
+    font-family:var(--sans);
+  }
+  #ai-text.warning { color:var(--orange); }
+  #ai-text.danger  { color:var(--red); }
+  #ai-text.ok      { color:var(--green); }
+  #ai-speak-btn {
+    font-family:var(--mono);
+    font-size:9px;
+    letter-spacing:.15em;
+    background:transparent;
+    color:var(--amber);
+    border:1px solid var(--amber);
+    padding:3px 10px;
+    cursor:pointer;
+    align-self:flex-start;
+    display:none;
+  }
 </style>
 </head>
 <body>
@@ -441,6 +484,15 @@
   <div class="sidebar-footer">
     <span id="alarm-count">0 ihlal</span>
     <span id="uptime">00:00:00</span>
+  </div>
+
+  <div id="ai-panel">
+    <div class="section-title">
+      <span style="color:var(--amber);font-size:10px;letter-spacing:.3em">AI ANALİZ</span>
+      <span id="ai-status">— bekleniyor</span>
+    </div>
+    <div id="ai-text" class="ok">Sistem başlatıldıktan sonra AI analizi başlar...</div>
+    <button id="ai-speak-btn" onclick="speakAI()">🔊 SESLİ OKU</button>
   </div>
 </div>
 
@@ -874,6 +926,115 @@ function onResults(results) {
 }
 
 // ─── BAŞLAT ──────────────────────────────────────────────────────────────────
+// ─── AI ANALİZ ───────────────────────────────────────────────────────────────
+let aiLastCall    = 0;
+let aiInterval    = 30000; // 30 saniyede bir
+let aiRunning     = false;
+let lastAiText    = '';
+let metricsHistory = []; // son 30sn metrikleri
+
+function collectMetrics() {
+  return {
+    ear:       parseFloat(document.getElementById('val-ear')?.textContent || 0),
+    gaze:      parseFloat(document.getElementById('val-gaze')?.textContent || 0),
+    mar:       parseFloat(document.getElementById('val-mar')?.textContent || 0),
+    pitch:     parseFloat(document.getElementById('val-pitch')?.textContent || 0),
+    yaw:       parseFloat(document.getElementById('val-yaw')?.textContent || 0),
+    perclos:   parseFloat(document.getElementById('perclos-val')?.textContent || 0),
+    alarms:    alarmCount,
+    activeAlarms: Array.from(activeAlarms),
+    uptime:    document.getElementById('uptime')?.textContent || '00:00:00',
+  };
+}
+
+async function runAIAnalysis() {
+  if (aiRunning) return;
+  aiRunning = true;
+
+  const metrics = collectMetrics();
+  metricsHistory.push(metrics);
+  if (metricsHistory.length > 10) metricsHistory.shift();
+
+  document.getElementById('ai-status').textContent = '⟳ analiz ediliyor...';
+
+  const prompt = `Sen bir araç güvenlik sistemisin. Sürücü izleme verilerini analiz edip kısa, net Türkçe uyarı ver.
+
+Anlık Veriler:
+- EAR (göz açıklığı, normal >0.20): ${metrics.ear.toFixed(3)}
+- GAZE (bakış sapması, normal <0.20): ${metrics.gaze.toFixed(3)}  
+- MAR (ağız açıklığı/esneme, normal <0.60): ${metrics.mar.toFixed(3)}
+- PITCH (baş eğimi, normal -50 ile -15): ${metrics.pitch.toFixed(1)}°
+- YAW (baş dönüşü, normal ±35°): ${metrics.yaw.toFixed(1)}°
+- PERCLOS (60sn göz kapanma oranı, normal <%20): ${metrics.perclos}
+- Aktif alarmlar: ${metrics.activeAlarms.length > 0 ? metrics.activeAlarms.join(', ') : 'yok'}
+- Toplam ihlal sayısı: ${metrics.alarms}
+- Çalışma süresi: ${metrics.uptime}
+
+Geçmiş (son ${metricsHistory.length} ölçüm): Perclos ortalaması: ${(metricsHistory.reduce((a,b)=>a+parseFloat(b.perclos||0),0)/metricsHistory.length).toFixed(1)}%
+
+Sadece 1-2 cümle, sürücüye yönelik, Türkçe, net uyarı ver. Tehlike seviyesini belirt: [NORMAL], [DİKKAT] veya [TEHLİKE]. Örnek: "[DİKKAT] Göz kapanma oranı artıyor, mola vermenizi öneririz."`;
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 150,
+        messages: [{ role: 'user', content: prompt }]
+      })
+    });
+
+    const data = await res.json();
+    const text = data.content?.[0]?.text || 'Analiz alınamadı.';
+    lastAiText = text;
+
+    const el = document.getElementById('ai-text');
+    el.textContent = text;
+
+    // Renk
+    if (text.includes('[TEHLİKE]')) {
+      el.className = 'danger';
+      // Otomatik sesli oku
+      speakAI();
+    } else if (text.includes('[DİKKAT]')) {
+      el.className = 'warning';
+    } else {
+      el.className = 'ok';
+    }
+
+    document.getElementById('ai-speak-btn').style.display = 'block';
+    document.getElementById('ai-status').textContent = new Date().toTimeString().slice(0,8);
+
+  } catch(e) {
+    document.getElementById('ai-text').textContent = 'AI bağlantı hatası.';
+    document.getElementById('ai-status').textContent = 'hata';
+  }
+
+  aiRunning = false;
+}
+
+function speakAI() {
+  if (!lastAiText || !window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+  const utt = new SpeechSynthesisUtterance(lastAiText.replace(/\[.*?\]/g, ''));
+  utt.lang = 'tr-TR';
+  utt.rate = 0.9;
+  utt.volume = 1.0;
+  window.speechSynthesis.speak(utt);
+}
+
+// Her 30 saniyede tetikle
+function startAILoop() {
+  runAIAnalysis();
+  setInterval(() => {
+    if (document.getElementById('live-dot').classList.contains('live') ||
+        document.getElementById('live-dot').classList.contains('warn')) {
+      runAIAnalysis();
+    }
+  }, aiInterval);
+}
+
 async function startSystem() {
   document.getElementById('start-screen').style.display = 'none';
   document.getElementById('loading').style.display = 'flex';
@@ -927,6 +1088,9 @@ async function startSystem() {
   document.getElementById('live-dot').className = 'dot live';
   document.getElementById('live-txt').textContent = 'CANLI';
   startTime = Date.now();
+
+  // AI analizi başlat (5sn sonra ilk analiz)
+  setTimeout(startAILoop, 5000);
 }
 </script>
 </body>
