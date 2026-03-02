@@ -975,12 +975,10 @@ Geçmiş (son ${metricsHistory.length} ölçüm): Perclos ortalaması: ${(metric
 Sadece 1-2 cümle, sürücüye yönelik, Türkçe, net uyarı ver. Tehlike seviyesini belirt: [NORMAL], [DİKKAT] veya [TEHLİKE]. Örnek: "[DİKKAT] Göz kapanma oranı artıyor, mola vermenizi öneririz."`;
 
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const res = await fetch('/api/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 150,
         messages: [{ role: 'user', content: prompt }]
       })
     });
