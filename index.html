@@ -462,9 +462,9 @@ const CFG = {
   POSE_SEC:      3.0,
   MAR_THR:       0.60,
   YAWN_SEC:      2.0,
-  PHONE_CONF:    0.30,   // düşük — kulağa götürünce kısmen gizlense de yakalar
+  PHONE_CONF:    0.55,
   ALARM_CD:      5.0,
-  YOLO_INTERVAL: 150,   // 800ms → 150ms, hızlı hareketi kaçırma
+  YOLO_INTERVAL: 800,
 };
 
 // Landmark indeksleri
@@ -593,7 +593,7 @@ function playBeep(freq, duration, pattern) {
 function triggerPhoneAlarm() {
   const type = 'TELEFON';
   const now = Date.now() / 1000;
-  if (now - (lastAlarm[type] || 0) < 2.0) { // telefon için 2sn cooldown (diğerleri 5sn)
+  if (now - (lastAlarm[type] || 0) < CFG.ALARM_CD) {
     activeAlarms.add(type); return;
   }
   lastAlarm[type] = now;
@@ -800,6 +800,9 @@ function onResults(results) {
 
   // Baş tilt
   const {pitch, yaw} = calcHeadTilt(lm, w, h);
+  const pitchAbnormal = pitch > -15 || pitch < -50;
+  const headDistracted = pitchAbnormal || Math.abs(yaw) > CFG.YAW_THR;
+
   document.getElementById('val-pitch').textContent = pitch.toFixed(1) + '°';
   document.getElementById('val-yaw').textContent   = yaw.toFixed(1) + '°';
   const pitchPct = Math.min(Math.abs(pitch) / 60 * 100, 100);
@@ -809,10 +812,7 @@ function onResults(results) {
   document.getElementById('bar-yaw').style.width        = yawPct + '%';
   document.getElementById('bar-yaw').style.background   = Math.abs(yaw) > CFG.YAW_THR ? 'var(--red)' : 'var(--green)';
   document.getElementById('val-pitch').style.color = pitchAbnormal ? 'var(--red)' : 'var(--green)';
-  document.getElementById('val-yaw').style.color   = Math.abs(yaw)   > CFG.YAW_THR ? 'var(--red)' : 'var(--green)';
-
-  const pitchAbnormal = pitch > -15 || pitch < -50;
-const headDistracted = pitchAbnormal || Math.abs(yaw) > CFG.YAW_THR;
+  document.getElementById('val-yaw').style.color   = Math.abs(yaw) > CFG.YAW_THR ? 'var(--red)' : 'var(--green)';
   if (headDistracted) {
     if (!headAwayAt) headAwayAt = nowSec;
     else if (nowSec - headAwayAt > CFG.POSE_SEC) triggerAlarm('DİKKATSİZ', '#f59e0b');
@@ -841,20 +841,19 @@ const headDistracted = pitchAbnormal || Math.abs(yaw) > CFG.YAW_THR;
     ctx.fill();
   }
 
-  // YOLO - telefon (sık aralıklı)
+  // YOLO - telefon (ayrı interval)
   if (cocoModel && now - lastYolo > CFG.YOLO_INTERVAL) {
     lastYolo = now;
     cocoModel.detect(canvas).then(predictions => {
-      let phoneFound = false;
       for (const p of predictions) {
-        // Telefon + kişi elindeki nesneler (remotes, books da bazen yakalar ama kabul)
-        if ((p.class === 'cell phone' || p.class === 'remote') && p.score > CFG.PHONE_CONF) {
-          phoneFound = true;
+        if (p.class === 'cell phone' && p.score > CFG.PHONE_CONF) {
           triggerPhoneAlarm();
           const [bx, by, bw, bh] = p.bbox;
+          // Parlak kırmızı çerçeve
           ctx.strokeStyle = '#ff2d2d';
           ctx.lineWidth = 4;
           ctx.strokeRect(bx, by, bw, bh);
+          // Köşe işaretleri
           const cs = 18;
           ctx.lineWidth = 3;
           [[bx,by,1,1],[bx+bw,by,-1,1],[bx,by+bh,1,-1],[bx+bw,by+bh,-1,-1]].forEach(([cx,cy,sx,sy]) => {
@@ -862,8 +861,9 @@ const headDistracted = pitchAbnormal || Math.abs(yaw) > CFG.YAW_THR;
             ctx.moveTo(cx, cy+sy*cs); ctx.lineTo(cx,cy); ctx.lineTo(cx+sx*cs,cy);
             ctx.stroke();
           });
+          // Etiket
           ctx.fillStyle = '#ff2d2d';
-          ctx.fillRect(bx, Math.max(0,by-24), 200, 24);
+          ctx.fillRect(bx, Math.max(0,by-24), 185, 24);
           ctx.fillStyle = '#fff';
           ctx.font = 'bold 13px monospace';
           ctx.fillText(`📱 TELEFON! %${(p.score*100).toFixed(0)}`, bx+5, Math.max(16,by-6));
