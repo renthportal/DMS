@@ -1,0 +1,934 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sürücü İzleme Sistemi</title>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.2/dist/coco-ssd.min.js"></script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow+Condensed:wght@300;400;600;700&display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    --bg:       #0a0c0f;
+    --panel:    #0f1318;
+    --border:   #1e2530;
+    --amber:    #f59e0b;
+    --red:      #ef4444;
+    --orange:   #f97316;
+    --green:    #22c55e;
+    --cyan:     #06b6d4;
+    --muted:    #4b5563;
+    --text:     #e2e8f0;
+    --mono:     'Share Tech Mono', monospace;
+    --sans:     'Barlow Condensed', sans-serif;
+  }
+
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:100%; height:100%; background:var(--bg); color:var(--text); font-family:var(--sans); overflow:hidden; }
+
+  body {
+    display:grid;
+    grid-template-columns: 1fr 340px;
+    grid-template-rows: 48px 1fr;
+    grid-template-areas: "header header" "video sidebar";
+    gap:0;
+  }
+
+  /* HEADER */
+  header {
+    grid-area: header;
+    background:var(--panel);
+    border-bottom:1px solid var(--border);
+    display:flex;
+    align-items:center;
+    padding:0 20px;
+    gap:20px;
+    letter-spacing:0.15em;
+    font-size:13px;
+    text-transform:uppercase;
+  }
+  .logo {
+    font-family:var(--mono);
+    font-size:15px;
+    color:var(--amber);
+    letter-spacing:0.3em;
+  }
+  .logo span { color:var(--muted); }
+  .hdr-status {
+    margin-left:auto;
+    display:flex;
+    align-items:center;
+    gap:8px;
+    font-size:11px;
+    color:var(--muted);
+  }
+  .dot {
+    width:7px; height:7px;
+    border-radius:50%;
+    background:var(--muted);
+    animation:none;
+  }
+  .dot.live { background:var(--green); animation:pulse 1.5s infinite; }
+  .dot.warn { background:var(--red); animation:pulse 0.4s infinite; }
+  @keyframes pulse {
+    0%,100%{ opacity:1; }
+    50%{ opacity:0.3; }
+  }
+
+  /* VIDEO */
+  #video-wrap {
+    grid-area: video;
+    position:relative;
+    background:#000;
+    overflow:hidden;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+  }
+  video { display:none; }
+  #output-canvas {
+    width:100%;
+    height:100%;
+    object-fit:contain;
+    display:block;
+  }
+
+  /* Alarm overlay */
+  #alarm-overlay {
+    position:absolute;
+    inset:0;
+    pointer-events:none;
+    display:none;
+    flex-direction:column;
+    justify-content:center;
+    align-items:center;
+    gap:10px;
+    z-index:10;
+  }
+  #alarm-overlay.active { display:flex; }
+  .alarm-badge {
+    font-family:var(--mono);
+    font-size:clamp(18px,3vw,36px);
+    font-weight:700;
+    letter-spacing:0.25em;
+    padding:10px 28px;
+    border:2px solid currentColor;
+    animation:flash-badge 0.5s infinite alternate;
+  }
+  @keyframes flash-badge { from{opacity:1} to{opacity:0.2} }
+  #alarm-border {
+    position:absolute;
+    inset:0;
+    pointer-events:none;
+    border:6px solid transparent;
+    transition:border-color 0.1s;
+    z-index:9;
+  }
+
+  /* Loading overlay */
+  #loading {
+    position:absolute;
+    inset:0;
+    background:#000;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    gap:20px;
+    z-index:20;
+  }
+  .spinner {
+    width:48px; height:48px;
+    border:3px solid var(--border);
+    border-top-color:var(--amber);
+    border-radius:50%;
+    animation:spin 0.8s linear infinite;
+  }
+  @keyframes spin { to{transform:rotate(360deg)} }
+  #load-text {
+    font-family:var(--mono);
+    font-size:13px;
+    color:var(--amber);
+    letter-spacing:0.2em;
+  }
+
+  /* SIDEBAR */
+  #sidebar {
+    grid-area: sidebar;
+    background:var(--panel);
+    border-left:1px solid var(--border);
+    display:flex;
+    flex-direction:column;
+    overflow:hidden;
+  }
+
+  .section {
+    padding:14px 16px;
+    border-bottom:1px solid var(--border);
+  }
+  .section-title {
+    font-size:10px;
+    letter-spacing:0.3em;
+    text-transform:uppercase;
+    color:var(--muted);
+    margin-bottom:12px;
+  }
+
+  /* Metric rows */
+  .metric {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    margin-bottom:10px;
+  }
+  .metric:last-child { margin-bottom:0; }
+  .metric-label {
+    font-size:11px;
+    letter-spacing:0.15em;
+    color:var(--muted);
+    text-transform:uppercase;
+    width:80px;
+  }
+  .metric-bar-wrap {
+    flex:1;
+    height:4px;
+    background:var(--border);
+    border-radius:2px;
+    margin:0 10px;
+    overflow:hidden;
+  }
+  .metric-bar {
+    height:100%;
+    border-radius:2px;
+    transition:width 0.2s, background 0.2s;
+  }
+  .metric-val {
+    font-family:var(--mono);
+    font-size:13px;
+    width:52px;
+    text-align:right;
+  }
+
+  /* Alert log */
+  #alert-log {
+    flex:1;
+    overflow-y:auto;
+    padding:10px 16px;
+    display:flex;
+    flex-direction:column;
+    gap:6px;
+  }
+  #alert-log::-webkit-scrollbar { width:3px; }
+  #alert-log::-webkit-scrollbar-thumb { background:var(--border); }
+  .log-entry {
+    font-family:var(--mono);
+    font-size:11px;
+    padding:6px 10px;
+    border-left:2px solid;
+    background:rgba(255,255,255,0.03);
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    animation:slide-in 0.2s ease;
+  }
+  @keyframes slide-in { from{opacity:0;transform:translateX(10px)} to{opacity:1;transform:translateX(0)} }
+  .log-entry.warn { border-color:var(--red); }
+  .log-entry.info { border-color:var(--amber); }
+  .log-time { color:var(--muted); font-size:10px; }
+
+  /* PERCLOS gauge */
+  .gauge-wrap {
+    display:flex;
+    align-items:center;
+    gap:10px;
+    padding:4px 0;
+  }
+  .gauge-label {
+    font-size:10px;
+    letter-spacing:0.2em;
+    color:var(--muted);
+    text-transform:uppercase;
+    width:65px;
+  }
+  .gauge-track {
+    flex:1;
+    height:8px;
+    background:var(--border);
+    border-radius:4px;
+    overflow:hidden;
+  }
+  .gauge-fill {
+    height:100%;
+    border-radius:4px;
+    transition:width 0.5s, background 0.5s;
+  }
+  .gauge-num {
+    font-family:var(--mono);
+    font-size:12px;
+    width:40px;
+    text-align:right;
+  }
+
+  /* Alarm pills */
+  #active-alarms {
+    display:flex;
+    flex-wrap:wrap;
+    gap:6px;
+    padding:10px 16px;
+    border-bottom:1px solid var(--border);
+    min-height:42px;
+  }
+  .pill {
+    font-family:var(--mono);
+    font-size:10px;
+    letter-spacing:0.1em;
+    padding:3px 10px;
+    border:1px solid;
+    border-radius:2px;
+    animation:flash-badge 0.5s infinite alternate;
+  }
+
+  /* Footer */
+  .sidebar-footer {
+    padding:10px 16px;
+    font-size:10px;
+    letter-spacing:0.15em;
+    color:var(--muted);
+    text-transform:uppercase;
+    display:flex;
+    justify-content:space-between;
+  }
+
+  /* Start screen */
+  #start-screen {
+    position:absolute;
+    inset:0;
+    background:rgba(0,0,0,0.92);
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    gap:24px;
+    z-index:30;
+    text-align:center;
+  }
+  #start-screen h2 {
+    font-family:var(--mono);
+    font-size:22px;
+    color:var(--amber);
+    letter-spacing:0.3em;
+  }
+  #start-screen p {
+    font-size:13px;
+    color:var(--muted);
+    max-width:380px;
+    line-height:1.7;
+  }
+  #start-btn {
+    font-family:var(--mono);
+    font-size:13px;
+    letter-spacing:0.3em;
+    text-transform:uppercase;
+    background:transparent;
+    color:var(--amber);
+    border:1px solid var(--amber);
+    padding:12px 36px;
+    cursor:pointer;
+    transition:all 0.2s;
+  }
+  #start-btn:hover { background:var(--amber); color:#000; }
+
+  /* no-face */
+  #no-face {
+    position:absolute;
+    bottom:14px;
+    left:50%;
+    transform:translateX(-50%);
+    font-family:var(--mono);
+    font-size:11px;
+    letter-spacing:0.2em;
+    color:var(--muted);
+    display:none;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">DMS<span>/</span>v3</div>
+  <span style="color:var(--muted);font-size:11px;letter-spacing:.2em">SÜRÜCÜ İZLEME</span>
+  <div class="hdr-status">
+    <div class="dot" id="live-dot"></div>
+    <span id="live-txt" style="font-family:var(--mono);font-size:11px">HAZIRLANIYOR</span>
+    <span style="margin-left:12px" id="fps-display" style="font-family:var(--mono)">-- FPS</span>
+  </div>
+</header>
+
+<div id="video-wrap">
+  <video id="video" playsinline></video>
+  <canvas id="output-canvas"></canvas>
+
+  <div id="start-screen">
+    <h2>SÜRÜCÜ İZLEME</h2>
+    <p>Kamera erişimi gerekiyor. Tarayıcı izin isteyecek — izin ver.</p>
+    <button id="start-btn" onclick="startSystem()">BAŞLAT</button>
+    <p style="font-size:11px;color:var(--muted)">Kurulum yok · Python yok · Sadece tarayıcı</p>
+  </div>
+
+  <div id="loading">
+    <div class="spinner"></div>
+    <div id="load-text">MODELLER YÜKLENİYOR...</div>
+  </div>
+
+  <div id="alarm-overlay"></div>
+  <div id="alarm-border"></div>
+  <div id="no-face">YÜZ TESPİT EDİLEMEDİ</div>
+</div>
+
+<div id="sidebar">
+  <div class="section">
+    <div class="section-title">Anlık Metrikler</div>
+    <div class="metric">
+      <span class="metric-label">EAR</span>
+      <div class="metric-bar-wrap"><div class="metric-bar" id="bar-ear" style="width:50%;background:var(--green)"></div></div>
+      <span class="metric-val" id="val-ear">0.000</span>
+    </div>
+    <div class="metric">
+      <span class="metric-label">GAZE</span>
+      <div class="metric-bar-wrap"><div class="metric-bar" id="bar-gaze" style="width:0%;background:var(--green)"></div></div>
+      <span class="metric-val" id="val-gaze">0.000</span>
+    </div>
+    <div class="metric">
+      <span class="metric-label">MAR</span>
+      <div class="metric-bar-wrap"><div class="metric-bar" id="bar-mar" style="width:0%;background:var(--green)"></div></div>
+      <span class="metric-val" id="val-mar">0.000</span>
+    </div>
+    <div class="metric">
+      <span class="metric-label">PITCH</span>
+      <div class="metric-bar-wrap"><div class="metric-bar" id="bar-pitch" style="width:50%;background:var(--green)"></div></div>
+      <span class="metric-val" id="val-pitch">0.0°</span>
+    </div>
+    <div class="metric">
+      <span class="metric-label">YAW</span>
+      <div class="metric-bar-wrap"><div class="metric-bar" id="bar-yaw" style="width:50%;background:var(--green)"></div></div>
+      <span class="metric-val" id="val-yaw">0.0°</span>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">PERCLOS (60 sn pencere)</div>
+    <div class="gauge-wrap">
+      <span class="gauge-label">ORAN</span>
+      <div class="gauge-track"><div class="gauge-fill" id="perclos-fill" style="width:0%;background:var(--green)"></div></div>
+      <span class="gauge-num" id="perclos-val">0%</span>
+    </div>
+    <div style="font-size:10px;color:var(--muted);margin-top:8px;letter-spacing:.1em">
+      %20 eşiği aşınca YORGUN alarmı
+    </div>
+  </div>
+
+  <div id="active-alarms"></div>
+
+  <div class="section-title" style="padding:10px 16px 6px;font-size:10px;letter-spacing:.3em;color:var(--muted)">ALARM GEÇMİŞİ</div>
+  <div id="alert-log"></div>
+
+  <div class="sidebar-footer">
+    <span id="alarm-count">0 ihlal</span>
+    <span id="uptime">00:00:00</span>
+  </div>
+</div>
+
+<audio id="beep" preload="auto">
+  <source src="data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFh4SCf3lyaF1VT0xMTlFUV1lZWlpZWFdVUU5LSElKS01QU1dZW11dXVxaWVdUUU5LSEZFRkdJS05RVFdbXWBiYmJiYF9dWlhVUlBOS0lIR0dISk1PUlVYW15hY2VlZWRjYV9dWlhVUlBNS0lIR0dHSEpMT1JVWFtfYmRmZ2dmZWNhX1xZV1RRTktJR0ZGR0lLTlFUV1teYWRmZ2hnZ2VjYV9cWVdUUU5LSUhHR0hJS05RVFZZXWBjZWZmZWRjYV9cWVZUUU5LSUhHR0hJSk5QU1ZZXWBiZGVlZWNiYF9cWlhVUlBNS0lIR0dHSEpMT1JVWFteYWNkZWVkY2FgXltYVlNQTktJSEdHSElKTE9SVFdaXWBiY2RkY2JgXlxZVlNRTktJSEdHSElKTFBSVVdaXWBiY2RkY2FgXltZVlNRTktJSEdHSElKTFBSVVhbXmBiY2RjYmBfXFpXVFFOS0lIR0dISktNT1JVWFtfYWJjY2JhX11aWFVTUE1LSEhHR0dISk1PUVRZXF9hYmNjYmBfXVpYVVJQTUtJSEdHSElKTE9SVVhbXmFiY2NiYF9dWlhVUlBNS0lIRw=="/>
+</audio>
+
+<script>
+// ─── AYARLAR ─────────────────────────────────────────────────────────────────
+const CFG = {
+  EAR_THR:       0.20,
+  EAR_SEC:       2.5,
+  PERCLOS_WIN:   60,
+  PERCLOS_THR:   0.20,
+  GAZE_THR:      0.20,
+  GAZE_SEC:      2.0,
+  PITCH_THR:     25.0,   // baş ileri/geri - araba kullanırken sorun yaratacak açı
+  YAW_THR:       35.0,   // baş sağa/sola
+  POSE_SEC:      3.0,
+  MAR_THR:       0.60,
+  YAWN_SEC:      2.0,
+  PHONE_CONF:    0.55,
+  ALARM_CD:      5.0,
+  YOLO_INTERVAL: 800,
+};
+
+// Landmark indeksleri
+const L_EYE  = [362,385,387,263,373,380];
+const R_EYE  = [33, 160,158,133,153,144];
+const L_IRIS = [473,474,475,476,477];
+const R_IRIS = [468,469,470,471,472];
+const MOUTH  = [61,291,13,14,17,0];
+
+// ─── STATE ───────────────────────────────────────────────────────────────────
+let perclosBuffer = [];
+let eyeClosedAt   = null;
+let yawnAt        = null;
+let gazeAwayAt    = null;
+let headAwayAt    = null;
+let lastAlarm     = {};
+let lastYolo      = 0;
+let alarmCount    = 0;
+let startTime     = Date.now();
+let fps           = 0, fpsFrames = 0, fpsLast = Date.now();
+let cocoModel     = null;
+let activeAlarms  = new Set();
+let alarmClearTimers = {};
+let faceMesh, camera;
+
+// ─── UTILS ───────────────────────────────────────────────────────────────────
+const dist = (a, b) => Math.hypot(a[0]-b[0], a[1]-b[1]);
+
+function lmPt(lm, i, w, h) { return [lm[i].x*w, lm[i].y*h]; }
+
+function calcEAR(lm, idx, w, h) {
+  const p = idx.map(i => lmPt(lm, i, w, h));
+  const A = dist(p[1], p[5]);
+  const B = dist(p[2], p[4]);
+  const C = dist(p[0], p[3]);
+  return (A + B) / (2 * C + 1e-6);
+}
+
+function calcMAR(lm, w, h) {
+  const p = MOUTH.map(i => lmPt(lm, i, w, h));
+  const vert1 = dist(p[2], p[3]);
+  const vert2 = dist(p[4], p[5]);
+  const horiz = dist(p[0], p[1]);
+  return (vert1 + vert2) / (2 * horiz + 1e-6);
+}
+
+function calcGaze(lm, eyeIdx, irisIdx, w, h) {
+  const eyePts  = eyeIdx.map(i => lmPt(lm, i, w, h));
+  const irisPts = irisIdx.map(i => lmPt(lm, i, w, h));
+
+  // Göz sol köşe, sağ köşe, merkez
+  const eyeLeft  = eyePts[0];  // sol köşe
+  const eyeRight = eyePts[3];  // sağ köşe
+  const eyeW     = dist(eyeLeft, eyeRight);
+  const eyeCx    = (eyeLeft[0] + eyeRight[0]) / 2;
+  const eyeCy    = (eyeLeft[1] + eyeRight[1]) / 2;
+
+  // Iris merkezi
+  const irisCx = irisPts.reduce((a,b)=>a+b[0],0) / irisPts.length;
+  const irisCy = irisPts.reduce((a,b)=>a+b[1],0) / irisPts.length;
+
+  // Yatay sapma (sağa/sola bakış için en önemli)
+  const horizOffset = Math.abs(irisCx - eyeCx) / (eyeW + 1e-6);
+  // Dikey sapma (yukarı/aşağı)
+  const vertOffset  = Math.abs(irisCy - eyeCy) / (eyeW + 1e-6);
+
+  // Ağırlıklı: yatay daha önemli
+  return horizOffset * 1.5 + vertOffset * 0.5;
+}
+
+function calcPerclos() {
+  const maxLen = Math.round(CFG.PERCLOS_WIN * 30);
+  if (perclosBuffer.length > maxLen) perclosBuffer.shift();
+  const sum = perclosBuffer.reduce((a,b)=>a+b, 0);
+  return perclosBuffer.length > 0 ? sum / perclosBuffer.length : 0;
+}
+
+// Baş pozu — MediaPipe landmark'larına dayalı normalize hesap
+// Referans: burun ucu (1), çene (152), sol kulak (234), sağ kulak (454)
+// Alın (10), burun köprüsü (6)
+function calcHeadTilt(lm, w, h) {
+  // YAW (sağa/sola dönüş):
+  // Burun ucu'nun yüz genişliğine göre yatay konumu
+  // Yüz tam cephede → burun yatayda ortada
+  const noseX   = lm[1].x;
+  const leftX   = lm[234].x;   // sol yanak kenarı
+  const rightX  = lm[454].x;   // sağ yanak kenarı
+  const faceW   = rightX - leftX;
+  const noseRel = (noseX - leftX) / (faceW + 1e-6); // 0→1, ortada=~0.5
+  const yaw     = (noseRel - 0.5) * 120; // derece cinsinden (-60 .. +60)
+
+  // PITCH (yukarı/aşağı eğim):
+  // Burun ucu ile çene arasındaki dikey mesafe /
+  // burun ucu ile alın arasındaki dikey mesafe oranı
+  const noseY     = lm[1].y;
+  const chinY     = lm[152].y;
+  const foreheadY = lm[10].y;
+  const lowerH    = chinY - noseY;
+  const upperH    = noseY - foreheadY;
+  const ratio     = lowerH / (upperH + 1e-6);
+  // Düz bakışta ratio ≈ 1.4-1.6 civarı
+  // Aşağı eğilince ratio artar, yukarı bakınca azalır
+  const pitch = (ratio - 1.5) * 55;
+
+  return { pitch, yaw };
+}
+
+// ─── ALARM ───────────────────────────────────────────────────────────────────
+function playBeep(freq, duration, pattern) {
+  try {
+    const actx = new (window.AudioContext || window.webkitAudioContext)();
+    let t = actx.currentTime;
+    pattern.forEach(([f, d]) => {
+      const osc = actx.createOscillator();
+      const gain = actx.createGain();
+      osc.connect(gain); gain.connect(actx.destination);
+      osc.frequency.value = f;
+      gain.gain.setValueAtTime(0.35, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + d);
+      osc.start(t); osc.stop(t + d);
+      t += d + 0.05;
+    });
+  } catch(e) {}
+}
+
+function triggerPhoneAlarm() {
+  const type = 'TELEFON';
+  const now = Date.now() / 1000;
+  if (now - (lastAlarm[type] || 0) < CFG.ALARM_CD) {
+    activeAlarms.add(type); return;
+  }
+  lastAlarm[type] = now;
+  activeAlarms.add(type);
+  alarmCount++;
+  document.getElementById('alarm-count').textContent = alarmCount + ' ihlal';
+  // Telefona özel: 3 kısa bip (farklı ton)
+  playBeep(0, 0, [[1200,0.12],[1200,0.12],[1200,0.12]]);
+  addLog('📱 TELEFON KULLANIMI', '#ff2d2d');
+  updateAlarmUI();
+  clearTimeout(alarmClearTimers[type]);
+  alarmClearTimers[type] = setTimeout(() => { activeAlarms.delete(type); updateAlarmUI(); }, 3000);
+}
+
+function triggerAlarm(type, color) {
+  const now = Date.now() / 1000;
+  if (now - (lastAlarm[type] || 0) < CFG.ALARM_CD) {
+    activeAlarms.add(type);
+    return;
+  }
+  lastAlarm[type] = now;
+  activeAlarms.add(type);
+  alarmCount++;
+  document.getElementById('alarm-count').textContent = alarmCount + ' ihlal';
+
+  // Beep — her alarm tipi farklı
+  const beepMap = {
+    'UYUYOR':     [[880,0.3],[880,0.3]],
+    'YORGUN':     [[660,0.4]],
+    'ESNIYOR':    [[440,0.3]],
+    'UZAK BAKIŞ': [[550,0.2],[550,0.2]],
+    'DİKKATSİZ':  [[500,0.2]],
+  };
+  playBeep(0, 0, beepMap[type] || [[660,0.3]]);
+
+
+  addLog(type, color);
+  updateAlarmUI();
+
+  // Clear after 3s
+  clearTimeout(alarmClearTimers[type]);
+  alarmClearTimers[type] = setTimeout(() => {
+    activeAlarms.delete(type);
+    updateAlarmUI();
+  }, 3000);
+}
+
+function addLog(type, color) {
+  const log = document.getElementById('alert-log');
+  const now = new Date();
+  const t = now.toTimeString().slice(0,8);
+  const el = document.createElement('div');
+  el.className = 'log-entry warn';
+  el.style.borderColor = color;
+  el.innerHTML = `<span style="color:${color}">${type}</span><span class="log-time">${t}</span>`;
+  log.prepend(el);
+  // Max 50 entries
+  while (log.children.length > 50) log.removeChild(log.lastChild);
+}
+
+function updateAlarmUI() {
+  const container = document.getElementById('active-alarms');
+  container.innerHTML = '';
+  const overlay = document.getElementById('alarm-overlay');
+  const border  = document.getElementById('alarm-border');
+  overlay.innerHTML = '';
+
+  if (activeAlarms.size === 0) {
+    overlay.classList.remove('active');
+    border.style.borderColor = 'transparent';
+    document.getElementById('live-dot').className = 'dot live';
+    return;
+  }
+
+  const colorMap = {
+    'UYUYOR':     '#ef4444',
+    'YORGUN':     '#f97316',
+    'ESNIYOR':    '#f59e0b',
+    'TELEFON':    '#ff2d2d',
+    'UZAK BAKIŞ': '#f97316',
+    'DİKKATSİZ':  '#f59e0b',
+  };
+
+  overlay.classList.add('active');
+  document.getElementById('live-dot').className = 'dot warn';
+
+  const firstColor = colorMap[Array.from(activeAlarms)[0]] || '#ef4444';
+  border.style.borderColor = firstColor;
+
+  for (const a of activeAlarms) {
+    const c = colorMap[a] || '#ef4444';
+    const pill = document.createElement('div');
+    pill.className = 'pill';
+    pill.style.color = c;
+    pill.style.borderColor = c;
+    pill.textContent = '⚠ ' + a;
+    container.appendChild(pill);
+
+    const badge = document.createElement('div');
+    badge.className = 'alarm-badge';
+    badge.style.color = c;
+    badge.textContent = '⚠  ' + a;
+    overlay.appendChild(badge);
+  }
+}
+
+// ─── METRIC UI ───────────────────────────────────────────────────────────────
+function setMetric(id, value, min, max, threshold, highBad=true) {
+  const pct = Math.max(0, Math.min(100, ((value - min) / (max - min)) * 100));
+  const bar = document.getElementById('bar-' + id);
+  const val = document.getElementById('val-' + id);
+  const over = highBad ? value > threshold : value < threshold;
+  const color = over ? 'var(--red)' : 'var(--green)';
+  bar.style.width = pct + '%';
+  bar.style.background = color;
+  val.style.color = color;
+  return { pct, over };
+}
+
+// ─── FACE MESH RESULT ────────────────────────────────────────────────────────
+let canvas, ctx;
+
+function onResults(results) {
+  if (!canvas) return;
+  fpsFrames++;
+  const now = Date.now();
+  if (now - fpsLast > 1000) {
+    fps = fpsFrames;
+    fpsFrames = 0;
+    fpsLast = now;
+    document.getElementById('fps-display').textContent = fps + ' FPS';
+    // Uptime
+    const elapsed = Math.floor((now - startTime) / 1000);
+    const h = String(Math.floor(elapsed/3600)).padStart(2,'0');
+    const m = String(Math.floor((elapsed%3600)/60)).padStart(2,'0');
+    const s = String(elapsed%60).padStart(2,'0');
+    document.getElementById('uptime').textContent = `${h}:${m}:${s}`;
+  }
+
+  const w = canvas.width;
+  const h = canvas.height;
+
+  ctx.clearRect(0, 0, w, h);
+  ctx.drawImage(results.image, 0, 0, w, h);
+
+  const noFace = document.getElementById('no-face');
+
+  if (!results.multiFaceLandmarks || results.multiFaceLandmarks.length === 0) {
+    noFace.style.display = 'block';
+    perclosBuffer.push(0);
+    return;
+  }
+  noFace.style.display = 'none';
+
+  const lm = results.multiFaceLandmarks[0];
+  const nowSec = now / 1000;
+
+  // EAR
+  const earL = calcEAR(lm, L_EYE, w, h);
+  const earR = calcEAR(lm, R_EYE, w, h);
+  const ear  = (earL + earR) / 2;
+  document.getElementById('val-ear').textContent = ear.toFixed(3);
+  setMetric('ear', ear, 0, 0.4, CFG.EAR_THR, false);
+
+  // PERCLOS
+  perclosBuffer.push(ear < CFG.EAR_THR ? 1 : 0);
+  const perclos = calcPerclos();
+  const pPct = (perclos * 100).toFixed(1);
+  document.getElementById('perclos-val').textContent = pPct + '%';
+  const pFill = document.getElementById('perclos-fill');
+  pFill.style.width = Math.min(perclos * 100 / 30 * 100, 100) + '%';
+  pFill.style.background = perclos > CFG.PERCLOS_THR ? 'var(--red)' : 'var(--amber)';
+
+  // Uyuklama
+  if (ear < CFG.EAR_THR) {
+    if (!eyeClosedAt) eyeClosedAt = nowSec;
+    else if (nowSec - eyeClosedAt > CFG.EAR_SEC) triggerAlarm('UYUYOR', '#ef4444');
+  } else { eyeClosedAt = null; }
+
+  if (perclos > CFG.PERCLOS_THR) triggerAlarm('YORGUN', '#f97316');
+
+  // MAR (esneme)
+  const mar = calcMAR(lm, w, h);
+  document.getElementById('val-mar').textContent = mar.toFixed(3);
+  setMetric('mar', mar, 0, 1, CFG.MAR_THR);
+  if (mar > CFG.MAR_THR) {
+    if (!yawnAt) yawnAt = nowSec;
+    else if (nowSec - yawnAt > CFG.YAWN_SEC) triggerAlarm('ESNIYOR', '#f59e0b');
+  } else { yawnAt = null; }
+
+  // Gaze
+  let gaze = 0;
+  try {
+    const gL = calcGaze(lm, L_EYE, L_IRIS, w, h);
+    const gR = calcGaze(lm, R_EYE, R_IRIS, w, h);
+    gaze = (gL + gR) / 2;
+  } catch(e){}
+  document.getElementById('val-gaze').textContent = gaze.toFixed(3);
+  setMetric('gaze', gaze, 0, 0.6, CFG.GAZE_THR);
+  if (gaze > CFG.GAZE_THR) {
+    if (!gazeAwayAt) gazeAwayAt = nowSec;
+    else if (nowSec - gazeAwayAt > CFG.GAZE_SEC) triggerAlarm('UZAK BAKIŞ', '#f97316');
+  } else { gazeAwayAt = null; }
+
+  // Baş tilt
+  const {pitch, yaw} = calcHeadTilt(lm, w, h);
+  // Pitch -50 ile -15 arası normal, dışarısı alarm
+  const pitchAbnormal = pitch > -15 || pitch < -50;
+  document.getElementById('val-pitch').textContent = pitch.toFixed(1) + '°';
+  document.getElementById('val-yaw').textContent   = yaw.toFixed(1) + '°';
+  const pitchPct = Math.min(Math.abs(pitch) / 60 * 100, 100);
+  const yawPct   = Math.min(Math.abs(yaw)   / 60 * 100, 100);
+  document.getElementById('bar-pitch').style.width      = pitchPct + '%';
+  document.getElementById('bar-pitch').style.background = pitchAbnormal ? 'var(--red)' : 'var(--green)';
+  document.getElementById('bar-yaw').style.width        = yawPct + '%';
+  document.getElementById('bar-yaw').style.background   = Math.abs(yaw) > CFG.YAW_THR ? 'var(--red)' : 'var(--green)';
+  document.getElementById('val-pitch').style.color = pitchAbnormal ? 'var(--red)' : 'var(--green)';
+  document.getElementById('val-yaw').style.color   = Math.abs(yaw) > CFG.YAW_THR ? 'var(--red)' : 'var(--green)';
+
+  const headDistracted = pitchAbnormal || Math.abs(yaw) > CFG.YAW_THR;
+  if (headDistracted) {
+    if (!headAwayAt) headAwayAt = nowSec;
+    else if (nowSec - headAwayAt > CFG.POSE_SEC) triggerAlarm('DİKKATSİZ', '#f59e0b');
+  } else { headAwayAt = null; }
+
+  // Göz noktaları çiz
+  ctx.fillStyle = '#06b6d466';
+  for (const i of [...L_EYE, ...R_EYE]) {
+    ctx.beginPath();
+    ctx.arc(lm[i].x*w, lm[i].y*h, 2, 0, Math.PI*2);
+    ctx.fill();
+  }
+  // Iris noktaları — gaze değerine göre renk
+  const irisColor = gaze > CFG.GAZE_THR ? '#ff4444' : '#00ff88';
+  ctx.strokeStyle = irisColor;
+  ctx.lineWidth = 2;
+  for (const irisSet of [L_IRIS, R_IRIS]) {
+    const pts = irisSet.map(i => lmPt(lm, i, w, h));
+    const cx = pts.reduce((a,b)=>a+b[0],0)/pts.length;
+    const cy = pts.reduce((a,b)=>a+b[1],0)/pts.length;
+    const r  = dist(pts[0], pts[2]) / 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI*2);
+    ctx.stroke();
+    ctx.fillStyle = irisColor + '44';
+    ctx.fill();
+  }
+
+  // YOLO - telefon (ayrı interval)
+  if (cocoModel && now - lastYolo > CFG.YOLO_INTERVAL) {
+    lastYolo = now;
+    cocoModel.detect(canvas).then(predictions => {
+      for (const p of predictions) {
+        if (p.class === 'cell phone' && p.score > CFG.PHONE_CONF) {
+          triggerPhoneAlarm();
+          const [bx, by, bw, bh] = p.bbox;
+          // Parlak kırmızı çerçeve
+          ctx.strokeStyle = '#ff2d2d';
+          ctx.lineWidth = 4;
+          ctx.strokeRect(bx, by, bw, bh);
+          // Köşe işaretleri
+          const cs = 18;
+          ctx.lineWidth = 3;
+          [[bx,by,1,1],[bx+bw,by,-1,1],[bx,by+bh,1,-1],[bx+bw,by+bh,-1,-1]].forEach(([cx,cy,sx,sy]) => {
+            ctx.beginPath();
+            ctx.moveTo(cx, cy+sy*cs); ctx.lineTo(cx,cy); ctx.lineTo(cx+sx*cs,cy);
+            ctx.stroke();
+          });
+          // Etiket
+          ctx.fillStyle = '#ff2d2d';
+          ctx.fillRect(bx, Math.max(0,by-24), 185, 24);
+          ctx.fillStyle = '#fff';
+          ctx.font = 'bold 13px monospace';
+          ctx.fillText(`📱 TELEFON! %${(p.score*100).toFixed(0)}`, bx+5, Math.max(16,by-6));
+        }
+      }
+    });
+  }
+}
+
+// ─── BAŞLAT ──────────────────────────────────────────────────────────────────
+async function startSystem() {
+  document.getElementById('start-screen').style.display = 'none';
+  document.getElementById('loading').style.display = 'flex';
+  document.getElementById('load-text').textContent = 'COCO-SSD YÜKLENİYOR...';
+
+  // Canvas boyut
+  canvas = document.getElementById('output-canvas');
+  ctx    = canvas.getContext('2d');
+  const wrap = document.getElementById('video-wrap');
+  const ro = new ResizeObserver(() => {
+    canvas.width  = wrap.clientWidth;
+    canvas.height = wrap.clientHeight;
+  });
+  ro.observe(wrap);
+  canvas.width  = wrap.clientWidth;
+  canvas.height = wrap.clientHeight;
+
+  // COCO-SSD
+  try {
+    cocoModel = await cocoSsd.load();
+    document.getElementById('load-text').textContent = 'MEDIAPIPE YÜKLENİYOR...';
+  } catch(e) {
+    console.warn('COCO-SSD yüklenemedi:', e);
+  }
+
+  // MediaPipe FaceMesh
+  faceMesh = new FaceMesh({ locateFile: f =>
+    `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/${f}`
+  });
+  faceMesh.setOptions({
+    maxNumFaces: 1,
+    refineLandmarks: true,
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5
+  });
+  faceMesh.onResults(onResults);
+
+  // Kamera
+  const video = document.getElementById('video');
+  camera = new Camera(video, {
+    onFrame: async () => {
+      await faceMesh.send({ image: video });
+    },
+    width: 1280, height: 720
+  });
+
+  document.getElementById('load-text').textContent = 'KAMERA AÇILIYOR...';
+  await camera.start();
+
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('live-dot').className = 'dot live';
+  document.getElementById('live-txt').textContent = 'CANLI';
+  startTime = Date.now();
+}
+</script>
+</body>
+</html>
