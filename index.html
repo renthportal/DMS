@@ -356,49 +356,6 @@
     color:var(--muted);
     display:none;
   }
-
-  /* AI Panel */
-  #ai-panel {
-    border-top:1px solid var(--border);
-    padding:12px 16px;
-    display:flex;
-    flex-direction:column;
-    gap:8px;
-  }
-  #ai-panel .section-title {
-    display:flex;
-    align-items:center;
-    gap:8px;
-    margin-bottom:4px;
-  }
-  #ai-status {
-    font-size:9px;
-    letter-spacing:.15em;
-    color:var(--muted);
-    margin-left:auto;
-  }
-  #ai-text {
-    font-size:11px;
-    line-height:1.6;
-    color:var(--text);
-    min-height:48px;
-    font-family:var(--sans);
-  }
-  #ai-text.warning { color:var(--orange); }
-  #ai-text.danger  { color:var(--red); }
-  #ai-text.ok      { color:var(--green); }
-  #ai-speak-btn {
-    font-family:var(--mono);
-    font-size:9px;
-    letter-spacing:.15em;
-    background:transparent;
-    color:var(--amber);
-    border:1px solid var(--amber);
-    padding:3px 10px;
-    cursor:pointer;
-    align-self:flex-start;
-    display:none;
-  }
 </style>
 </head>
 <body>
@@ -484,15 +441,6 @@
   <div class="sidebar-footer">
     <span id="alarm-count">0 ihlal</span>
     <span id="uptime">00:00:00</span>
-  </div>
-
-  <div id="ai-panel">
-    <div class="section-title">
-      <span style="color:var(--amber);font-size:10px;letter-spacing:.3em">AI ANALİZ</span>
-      <span id="ai-status">— bekleniyor</span>
-    </div>
-    <div id="ai-text" class="ok">Sistem başlatıldıktan sonra AI analizi başlar...</div>
-    <button id="ai-speak-btn" onclick="speakAI()">🔊 SESLİ OKU</button>
   </div>
 </div>
 
@@ -926,138 +874,6 @@ function onResults(results) {
 }
 
 // ─── BAŞLAT ──────────────────────────────────────────────────────────────────
-// ─── AI ANALİZ ───────────────────────────────────────────────────────────────
-let aiLastCall    = 0;
-let aiInterval    = 10000; // 10 saniyede bir
-let aiRunning     = false;
-let lastAiText    = '';
-let metricsHistory = [];
-
-function collectMetrics() {
-  return {
-    ear:      parseFloat(document.getElementById('val-ear')?.textContent || 0),
-    gaze:     parseFloat(document.getElementById('val-gaze')?.textContent || 0),
-    mar:      parseFloat(document.getElementById('val-mar')?.textContent || 0),
-    pitch:    parseFloat(document.getElementById('val-pitch')?.textContent || 0),
-    yaw:      parseFloat(document.getElementById('val-yaw')?.textContent || 0),
-    perclos:  parseFloat(document.getElementById('perclos-val')?.textContent || 0),
-    alarms:   alarmCount,
-    activeAlarms: Array.from(activeAlarms),
-    ts:       Date.now()
-  };
-}
-
-function buildTrend() {
-  if (metricsHistory.length < 2) return null;
-  const old  = metricsHistory[0];
-  const curr = metricsHistory[metricsHistory.length - 1];
-  const durMin = ((curr.ts - old.ts) / 60000).toFixed(1);
-
-  // Alarm hızı: son pencerede kaç alarm
-  const alarmDelta = curr.alarms - old.alarms;
-
-  // Perclos trendi
-  const perclosTrend = curr.perclos - old.perclos;
-
-  // EAR trendi (düşüşü kötü)
-  const earTrend = curr.ear - old.ear;
-
-  return { durMin, alarmDelta, perclosTrend, earTrend, curr, old };
-}
-
-async function runAIAnalysis() {
-  if (aiRunning) return;
-  aiRunning = true;
-
-  const metrics = collectMetrics();
-  metricsHistory.push(metrics);
-  if (metricsHistory.length > 20) metricsHistory.shift();
-
-  const trend = buildTrend();
-
-  document.getElementById('ai-status').textContent = '⟳ analiz...';
-
-  // Geçmiş özeti
-  const histSummary = metricsHistory.slice(-6).map((m, i) =>
-    `t-${(metricsHistory.slice(-6).length - 1 - i) * 15}sn: EAR=${m.ear.toFixed(2)} PERCLOS=${m.perclos}% ihlal=${m.alarms}`
-  ).join('\n');
-
-  const prompt = `Sen araç güvenlik AI sistemisin. Ham metrik değerleri tekrarlama — ÖRÜNTÜ, TREND ve RİSK tahminini analiz et.
-
-=== ANLIK ===
-EAR: ${metrics.ear.toFixed(3)} (göz açıklığı, <0.20 tehlike)
-PERCLOS: ${metrics.perclos}% (göz kapanma oranı, >%20 tehlike)
-GAZE: ${metrics.gaze.toFixed(3)} (bakış sapması, >0.20 dikkat dağınıklığı)
-MAR: ${metrics.mar.toFixed(3)} (esneme, >0.60 yorgunluk)
-Aktif alarm: ${metrics.activeAlarms.join(', ') || 'yok'}
-Toplam ihlal: ${metrics.alarms}
-
-=== TREND (${trend?.durMin || 0} dakika) ===
-${trend ? `- İhlal artış hızı: ${trend.alarmDelta} ihlal/pencere
-- PERCLOS değişimi: ${trend.perclosTrend > 0 ? '+' : ''}${trend.perclosTrend.toFixed(1)}% (${trend.perclosTrend > 2 ? 'ARTIYOR ⚠' : trend.perclosTrend < -2 ? 'azalıyor ✓' : 'stabil'})
-- EAR değişimi: ${trend.earTrend > 0 ? '+' : ''}${trend.earTrend.toFixed(3)} (${trend.earTrend < -0.02 ? 'DÜŞÜYOR ⚠' : 'stabil'})` : 'Yeterli veri yok'}
-
-=== GEÇMİŞ ===
-${histSummary}
-
-GÖREV: Tek cümle. [NORMAL], [DİKKAT] veya [TEHLİKE] ile başla. Sadece en kritik bulguyu yaz. Türkçe, kısa.`;
-
-  try {
-    const response = await fetch('/api/analyze', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        messages: [{ role: 'user', content: prompt }]
-      })
-    });
-
-    const data = await response.json();
-    const text = data.content?.[0]?.text || 'Analiz alınamadı.';
-    lastAiText = text;
-
-    const el = document.getElementById('ai-text');
-    el.textContent = text;
-
-    if (text.includes('[TEHLİKE]')) {
-      el.className = 'danger';
-      speakAI();
-    } else if (text.includes('[DİKKAT]')) {
-      el.className = 'warning';
-    } else {
-      el.className = 'ok';
-    }
-
-    document.getElementById('ai-speak-btn').style.display = 'block';
-    document.getElementById('ai-status').textContent = new Date().toTimeString().slice(0,8);
-
-  } catch(e) {
-    document.getElementById('ai-text').textContent = 'AI bağlantı hatası: ' + e.message;
-    document.getElementById('ai-status').textContent = 'hata';
-  }
-
-  aiRunning = false;
-}
-
-function speakAI() {
-  if (!lastAiText || !window.speechSynthesis) return;
-  window.speechSynthesis.cancel();
-  const utt = new SpeechSynthesisUtterance(lastAiText.replace(/\[.*?\]/g, ''));
-  utt.lang = 'tr-TR';
-  utt.rate = 0.9;
-  utt.volume = 1.0;
-  window.speechSynthesis.speak(utt);
-}
-
-function startAILoop() {
-  runAIAnalysis();
-  setInterval(() => {
-    const dot = document.getElementById('live-dot');
-    if (dot.classList.contains('live') || dot.classList.contains('warn')) {
-      runAIAnalysis();
-    }
-  }, aiInterval);
-}
-
 async function startSystem() {
   document.getElementById('start-screen').style.display = 'none';
   document.getElementById('loading').style.display = 'flex';
@@ -1111,9 +927,6 @@ async function startSystem() {
   document.getElementById('live-dot').className = 'dot live';
   document.getElementById('live-txt').textContent = 'CANLI';
   startTime = Date.now();
-
-  // AI analizi başlat (5sn sonra ilk analiz)
-  setTimeout(startAILoop, 5000);
 }
 </script>
 </body>
