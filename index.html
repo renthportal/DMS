@@ -612,7 +612,7 @@ function triggerPhoneAlarm() {
   playBeep(0, 0, [[1200,0.12],[1200,0.12],[1200,0.12]]);
   addLog('📱 TELEFON KULLANIMI', '#ff2d2d');
   updateAlarmUI();
-  triggerAI('Sürücü telefon kullanıyor!', 'urgent');
+
   clearTimeout(alarmClearTimers[type]);
   alarmClearTimers[type] = setTimeout(() => { activeAlarms.delete(type); updateAlarmUI(); }, 3000);
 }
@@ -639,7 +639,7 @@ function triggerAlarm(type, color) {
 
   // AI'ı tetikle — alarm tipine göre aciliyet
   const urgentTypes = ['UYUYOR', 'YORGUN'];
-  triggerAI(`${type} alarmı tetiklendi.`, urgentTypes.includes(type) ? 'urgent' : 'normal');
+
 
   addLog(type, color);
   updateAlarmUI();
@@ -928,35 +928,10 @@ function onResults(results) {
   }
 }
 
+
 // ─── AI CANLI GÖZLEMCİ ───────────────────────────────────────────────────────
-let aiHistory      = [];   // Konuşma geçmişi
-let aiRunning      = false;
-let aiLastTrigger  = 0;
-let aiLastState    = '';
-let lastAiText     = '';
-let aiCooldown     = 8000; // ms — aynı durum için tekrar bekleme
-let aiUrgentCD     = 3000; // acil durumlar için kısa cooldown
-
-const AI_SYSTEM = `Sen bir araç güvenlik görevlisisin. Sürücüyü canlı izliyorsun ve kısa, doğal Türkçe yorumlar yapıyorsun.
-
-KURALLAR:
-- Metrik değerleri (EAR, PERCLOS vb.) ASLA söyleme
-- İnsan gibi konuş: "Gözlerin kapanmaya başladı", "Kafanı kaldır", "Telefonu bırak"
-- Maksimum 1 cümle
-- Geçmiş mesajları hatırla, aynı şeyi tekrarlama
-- Durum normale dönünce kısa olumlu not düş
-- Acil durumlarda sert ve net ol`;
-
-function getStateKey(alarms, ear, perclos) {
-  if (alarms.includes('UYUYOR')) return 'sleeping';
-  if (alarms.includes('TELEFON')) return 'phone';
-  if (alarms.includes('YORGUN') || perclos > 15) return 'drowsy';
-  if (alarms.includes('DİKKATSİZ')) return 'distracted';
-  if (alarms.includes('UZAK BAKIŞ')) return 'gaze';
-  if (alarms.includes('ESNIYOR')) return 'yawn';
-  if (ear > 0.25 && perclos < 5 && alarms.length === 0) return 'ok';
-  return 'neutral';
-}
+let aiRunning  = false;
+let lastAiText = '';
 
 const AI_SYSTEM = `Sen bir araç güvenlik kamerasını izleyen görevlisin. Sana gelen her görüntüde sürücüyü gözlemle.
 
@@ -966,89 +941,6 @@ SADECE GÖRDÜĞÜNÜ söyle — sayı, metrik, teknik terim KULLANMA.
 Örnek doğru: "Normal görünüyor."
 Maksimum 1 cümle. Türkçe.`;
 
-async function triggerAI(event, urgency = 'normal') {
-  const now = Date.now();
-  const cd  = urgency === 'urgent' ? aiUrgentCD : aiCooldown;
-  if (aiRunning || now - aiLastTrigger < cd) return;
-
-  const alarms   = Array.from(activeAlarms);
-  const stateKey = getStateKey(alarms,
-    parseFloat(document.getElementById('val-ear')?.textContent || 0.3),
-    parseFloat(document.getElementById('perclos-val')?.textContent || 0));
-  if (stateKey === aiLastState && stateKey === 'ok') return;
-  if (stateKey === aiLastState && urgency !== 'urgent') return;
-
-  aiLastState   = stateKey;
-  aiLastTrigger = now;
-  aiRunning     = true;
-
-  const dot = document.getElementById('ai-dot');
-  dot.style.background = 'var(--amber)';
-
-  // Canvas'tan frame al
-  let imageBase64 = null;
-  try {
-    const tmp = document.createElement('canvas');
-    tmp.width = 320; tmp.height = 240;
-    tmp.getContext('2d').drawImage(canvas, 0, 0, 320, 240);
-    imageBase64 = tmp.toDataURL('image/jpeg', 0.7).split(',')[1];
-  } catch(e) {}
-
-  if (!imageBase64) {
-    aiRunning = false;
-    dot.style.background = 'var(--muted)';
-    return;
-  }
-
-  // Her seferinde TERTEMİZ mesaj — geçmiş YOK, sadece görüntü
-  const messages = [{
-    role: 'user',
-    content: [
-      { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: imageBase64 } },
-      { type: 'text', text: 'Bu kişiyi izliyorsun. Ne görüyorsun?' }
-    ]
-  }];
-
-  try {
-    const res = await fetch('/api/analyze', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ system: AI_SYSTEM, messages })
-    });
-
-    const data = await res.json();
-    const text = data.content?.[0]?.text || '';
-    if (!text) throw new Error('boş');
-
-    lastAiText = text;
-    const bubble = document.getElementById('ai-bubble');
-    bubble.style.opacity = '1';
-    bubble.textContent   = '';
-
-    if (stateKey === 'sleeping') bubble.style.color = 'var(--red)';
-    else if (stateKey === 'phone') bubble.style.color = '#ff2d2d';
-    else if (stateKey === 'drowsy') bubble.style.color = 'var(--orange)';
-    else if (stateKey === 'ok') bubble.style.color = 'var(--green)';
-    else bubble.style.color = 'var(--amber)';
-
-    let i = 0;
-    const timer = setInterval(() => {
-      bubble.textContent += text[i++];
-      if (i >= text.length) {
-        clearInterval(timer);
-        document.getElementById('ai-speak-btn').style.display = 'block';
-        dot.style.background = stateKey === 'ok' ? 'var(--green)' : 'var(--amber)';
-        if (urgency === 'urgent') speakLast();
-      }
-    }, 28);
-
-  } catch(e) {
-    document.getElementById('ai-bubble').textContent = '...';
-    dot.style.background = 'var(--muted)';
-  }
-
-  aiRunning = false;
-}
 
 function speakLast() {
   if (!lastAiText || !window.speechSynthesis) return;
@@ -1061,7 +953,6 @@ function speakLast() {
 // Periyodik normal durum kontrolü
 function startAILoop() {
   // Kalibrasyon bitince ilk tarama
-  setTimeout(() => triggerAI('start', 'normal'), 3000);
 
   // Her 10sn'de bir — alarm olsun olmasın frame gönder
   // AI kendi karar verir: telefon var mı, uyukluyor mu vs.
