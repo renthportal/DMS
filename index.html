@@ -662,7 +662,6 @@ function triggerAlarm(type, color) {
     'ESNIYOR':    [[440,0.3]],
     'UZAK BAKIŞ': [[550,0.2],[550,0.2]],
     'DİKKATSİZ':  [[500,0.2]],
-    'SİGARA':     [[700,0.2],[500,0.2]],
   };
   playBeep(0, 0, beepMap[type] || [[660,0.3]]);
 
@@ -1021,52 +1020,43 @@ async function runYoloInference() {
 
     const result = yoloModel.execute(input);
     const data = await result.data();
-    const shape = result.shape;
-    
-    // DEBUG — her zaman logla (sonra kaldırırız)
-    console.log('YOLO shape:', shape, '| data len:', data.length);
-    const maxVal = Math.max(...Array.from(data.slice(0, 500)));
-    console.log('Max value in first 500:', maxVal.toFixed(4));
-    
+    const shape = result.shape; // [1, 8, 8400]
     input.dispose();
     result.dispose();
 
-    const numBoxes  = shape[shape.length - 1];
-    const numFields = shape[shape.length - 2]; // 8 = 4 coords + 4 classes
-
+    const numBoxes = 8400;
     const scaleX = canvas.width  / 640;
     const scaleY = canvas.height / 640;
 
-    for (let i = 0; i < numBoxes; i++) {
-      // cx, cy, w, h
-      const cx = data[0 * numBoxes + i];
-      const cy = data[1 * numBoxes + i];
-      const w  = data[2 * numBoxes + i];
-      const h  = data[3 * numBoxes + i];
+    // En yüksek skorlu tespiti bul (debug için)
+    let debugMax = { score: 0, class: -1, cx: 0, cy: 0 };
 
-      // Class scores
+    for (let i = 0; i < numBoxes; i++) {
       let maxScore = 0, maxClass = -1;
       for (let c = 0; c < 4; c++) {
         const score = data[(4 + c) * numBoxes + i];
         if (score > maxScore) { maxScore = score; maxClass = c; }
       }
-
+      if (maxScore > debugMax.score) {
+        debugMax = { score: maxScore, class: maxClass, cx: data[0*numBoxes+i], cy: data[1*numBoxes+i] };
+      }
       if (maxScore < CFG.PHONE_CONF) continue;
       if (maxClass < 0) continue;
 
-      // Koordinatları canvas'a çevir
+      const cx = data[0 * numBoxes + i];
+      const cy = data[1 * numBoxes + i];
+      const w  = data[2 * numBoxes + i];
+      const h  = data[3 * numBoxes + i];
+
       const bx = (cx - w / 2) * scaleX;
       const by = (cy - h / 2) * scaleY;
       const bw = w * scaleX;
       const bh = h * scaleY;
 
-      // Alarm tetikle — SADECE "phone" (2) ve "smoking" (3) class'ı
-      // "on-phone" (1) class'ı güvenilir değil, telefonsuz da tetikleniyor
+      // Alarm tetikle — SADECE "phone" (2) class'ı
       if (maxClass === 2) triggerPhoneAlarm();
-      else if (maxClass === 0 || maxClass === 3) triggerAlarm('SİGARA', '#ff6600');
-      else continue; // on-phone class'ını yoksay
+      else continue;
 
-      // Çerçeve çiz
       const color = YOLO_COLORS[maxClass];
       ctx.strokeStyle = color;
       ctx.lineWidth = 3;
@@ -1076,6 +1066,14 @@ async function runYoloInference() {
       ctx.fillStyle = '#fff';
       ctx.font = 'bold 12px monospace';
       ctx.fillText(`${YOLO_LABELS[maxClass]} %${(maxScore*100).toFixed(0)}`, bx+4, Math.max(14, by-5));
+    }
+
+    // Her 2 saniyede bir en iyi tespiti logla
+    if (!window._lastDbgLog || Date.now() - window._lastDbgLog > 2000) {
+      window._lastDbgLog = Date.now();
+      if (debugMax.score > 0.1) {
+        console.log(`Best: class=${YOLO_CLASSES[debugMax.class]}(${debugMax.class}) score=${debugMax.score.toFixed(3)}`);
+      }
     }
   } catch(e) {
     console.warn('YOLO inference error:', e);
