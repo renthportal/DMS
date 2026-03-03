@@ -7,8 +7,6 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js" crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.2/dist/coco-ssd.min.js"></script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow+Condensed:wght@300;400;600;700&display=swap" rel="stylesheet">
@@ -474,7 +472,7 @@ const CFG = {
   YAWN_SEC:      2.0,
   PHONE_CONF:    0.55,
   ALARM_CD:      5.0,
-  YOLO_INTERVAL: 800,
+  YOLO_INTERVAL: 500,
 };
 
 // Landmark indeksleri
@@ -814,25 +812,45 @@ function onResults(results) {
     else if (nowSec - gazeAwayAt > CFG.GAZE_SEC) triggerAlarm('UZAK BAKIŞ', '#f97316');
   } else { gazeAwayAt = null; }
 
-  // Baş tilt
+  // Baş tilt — ayna bakışı vs dikkatsizlik
   const {pitch, yaw} = calcHeadTilt(lm, w, h);
-  const pitchAbnormal = pitch > -15 || pitch < -50;
-  const headDistracted = pitchAbnormal || Math.abs(yaw) > CFG.YAW_THR;
+  const pitchAbnormal = pitch < calib.basePitch - 15 || pitch > calib.basePitch + 20;
+  const yawFromBase   = yaw - calib.baseYaw;
+
+  // Çekici ayna açısı: 30-75° arası yaw = muhtemelen ayna bakışı
+  // Ayna bakışı < 2sn → normal | > 2sn → AYNA UZUN alarmı
+  // Pitch aşağı (uyuklama) = her zaman POSE_SEC
+  const isMirrorAngle = Math.abs(yawFromBase) > 30 && Math.abs(yawFromBase) < 75;
+  const yawAbnormal   = Math.abs(yawFromBase) > 30;
+  const headDistracted = pitchAbnormal || yawAbnormal;
+  const mirrorSec = 2.0;
 
   document.getElementById('val-pitch').textContent = pitch.toFixed(1) + '°';
   document.getElementById('val-yaw').textContent   = yaw.toFixed(1) + '°';
   const pitchPct = Math.min(Math.abs(pitch) / 60 * 100, 100);
-  const yawPct   = Math.min(Math.abs(yaw)   / 60 * 100, 100);
+  const yawPct   = Math.min(Math.abs(yawFromBase) / 60 * 100, 100);
   document.getElementById('bar-pitch').style.width      = pitchPct + '%';
   document.getElementById('bar-pitch').style.background = pitchAbnormal ? 'var(--red)' : 'var(--green)';
   document.getElementById('bar-yaw').style.width        = yawPct + '%';
-  document.getElementById('bar-yaw').style.background   = Math.abs(yaw) > CFG.YAW_THR ? 'var(--red)' : 'var(--green)';
+  document.getElementById('bar-yaw').style.background   = yawAbnormal ? 'var(--amber)' : 'var(--green)';
   document.getElementById('val-pitch').style.color = pitchAbnormal ? 'var(--red)' : 'var(--green)';
-  document.getElementById('val-yaw').style.color   = Math.abs(yaw) > CFG.YAW_THR ? 'var(--red)' : 'var(--green)';
+  document.getElementById('val-yaw').style.color   = yawAbnormal ? 'var(--amber)' : 'var(--green)';
+
   if (headDistracted) {
     if (!headAwayAt) headAwayAt = nowSec;
-    else if (nowSec - headAwayAt > CFG.POSE_SEC) triggerAlarm('DİKKATSİZ', '#f59e0b');
-  } else { headAwayAt = null; }
+    else {
+      const elapsed = nowSec - headAwayAt;
+      const thr = pitchAbnormal ? CFG.POSE_SEC : (isMirrorAngle ? mirrorSec : CFG.POSE_SEC);
+      if (elapsed > thr) {
+        const label = (isMirrorAngle && !pitchAbnormal) ? 'AYNA UZUN' : 'DİKKATSİZ';
+        triggerAlarm(label, '#f59e0b');
+      }
+    }
+  } else {
+    headAwayAt = null;
+    if (activeAlarms.has('DİKKATSİZ')) { activeAlarms.delete('DİKKATSİZ'); updateAlarmUI(); }
+    if (activeAlarms.has('AYNA UZUN')) { activeAlarms.delete('AYNA UZUN'); updateAlarmUI(); }
+  }
 
   // Göz noktaları çiz
   ctx.fillStyle = '#06b6d466';
@@ -857,35 +875,56 @@ function onResults(results) {
     ctx.fill();
   }
 
-  // YOLO - telefon (ayrı interval)
-  if (cocoModel && now - lastYolo > CFG.YOLO_INTERVAL) {
+  // Telefon tespiti — Roboflow API (her 500ms)
+  if (now - lastYolo > CFG.YOLO_INTERVAL) {
     lastYolo = now;
-    cocoModel.detect(canvas).then(predictions => {
-      for (const p of predictions) {
-        if (p.class === 'cell phone' && p.score > CFG.PHONE_CONF) {
-          triggerPhoneAlarm();
-          const [bx, by, bw, bh] = p.bbox;
-          // Parlak kırmızı çerçeve
-          ctx.strokeStyle = '#ff2d2d';
-          ctx.lineWidth = 4;
-          ctx.strokeRect(bx, by, bw, bh);
-          // Köşe işaretleri
-          const cs = 18;
-          ctx.lineWidth = 3;
-          [[bx,by,1,1],[bx+bw,by,-1,1],[bx,by+bh,1,-1],[bx+bw,by+bh,-1,-1]].forEach(([cx,cy,sx,sy]) => {
-            ctx.beginPath();
-            ctx.moveTo(cx, cy+sy*cs); ctx.lineTo(cx,cy); ctx.lineTo(cx+sx*cs,cy);
-            ctx.stroke();
-          });
-          // Etiket
-          ctx.fillStyle = '#ff2d2d';
-          ctx.fillRect(bx, Math.max(0,by-24), 185, 24);
-          ctx.fillStyle = '#fff';
-          ctx.font = 'bold 13px monospace';
-          ctx.fillText(`📱 TELEFON! %${(p.score*100).toFixed(0)}`, bx+5, Math.max(16,by-6));
-        }
+
+    // Canvas'ı base64'e çevir
+    const tmpCanvas = document.createElement('canvas');
+    tmpCanvas.width  = 416;
+    tmpCanvas.height = 416;
+    tmpCanvas.getContext('2d').drawImage(canvas, 0, 0, 416, 416);
+    const base64 = tmpCanvas.toDataURL('image/jpeg', 0.7).split(',')[1];
+
+    fetch('/api/roboflow', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: base64 })
+    }).then(r => r.json()).then(data => {
+      if (!data.predictions) return;
+      const scaleX = canvas.width  / 416;
+      const scaleY = canvas.height / 416;
+
+      for (const p of data.predictions) {
+        if (p.confidence < CFG.PHONE_CONF) continue;
+        triggerPhoneAlarm();
+
+        // Koordinatları orijinal canvas boyutuna ölçekle
+        const bx = (p.x - p.width  / 2) * scaleX;
+        const by = (p.y - p.height / 2) * scaleY;
+        const bw = p.width  * scaleX;
+        const bh = p.height * scaleY;
+
+        // Kırmızı çerçeve
+        ctx.strokeStyle = '#ff2d2d';
+        ctx.lineWidth = 4;
+        ctx.strokeRect(bx, by, bw, bh);
+        // Köşe işaretleri
+        const cs = 18;
+        ctx.lineWidth = 3;
+        [[bx,by,1,1],[bx+bw,by,-1,1],[bx,by+bh,1,-1],[bx+bw,by+bh,-1,-1]].forEach(([cx,cy,sx,sy]) => {
+          ctx.beginPath();
+          ctx.moveTo(cx, cy+sy*cs); ctx.lineTo(cx,cy); ctx.lineTo(cx+sx*cs,cy);
+          ctx.stroke();
+        });
+        // Etiket
+        ctx.fillStyle = '#ff2d2d';
+        ctx.fillRect(bx, Math.max(0,by-24), 200, 24);
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 13px monospace';
+        ctx.fillText(`📱 TELEFON! %${(p.confidence*100).toFixed(0)}`, bx+5, Math.max(16,by-6));
       }
-    });
+    }).catch(() => {});
   }
 }
 
@@ -919,16 +958,23 @@ function getStateKey(alarms, ear, perclos) {
   return 'neutral';
 }
 
+const AI_SYSTEM = `Sen bir araç güvenlik kamerasını izleyen görevlisin. Sana gelen her görüntüde sürücüyü gözlemle.
+
+SADECE GÖRDÜĞÜNÜ söyle — sayı, metrik, teknik terim KULLANMA.
+Örnek doğru: "Elinde telefon var, yola bakmıyor."
+Örnek doğru: "Gözleri ağırlaşıyor, uyukluyor gibi."
+Örnek doğru: "Normal görünüyor."
+Maksimum 1 cümle. Türkçe.`;
+
 async function triggerAI(event, urgency = 'normal') {
   const now = Date.now();
   const cd  = urgency === 'urgent' ? aiUrgentCD : aiCooldown;
   if (aiRunning || now - aiLastTrigger < cd) return;
 
-  // Aynı durum tekrarsa geç
-  const alarms  = Array.from(activeAlarms);
-  const earVal  = parseFloat(document.getElementById('val-ear')?.textContent || 0.3);
-  const percVal = parseFloat(document.getElementById('perclos-val')?.textContent || 0);
-  const stateKey = getStateKey(alarms, earVal, percVal);
+  const alarms   = Array.from(activeAlarms);
+  const stateKey = getStateKey(alarms,
+    parseFloat(document.getElementById('val-ear')?.textContent || 0.3),
+    parseFloat(document.getElementById('perclos-val')?.textContent || 0));
   if (stateKey === aiLastState && stateKey === 'ok') return;
   if (stateKey === aiLastState && urgency !== 'urgent') return;
 
@@ -936,54 +982,62 @@ async function triggerAI(event, urgency = 'normal') {
   aiLastTrigger = now;
   aiRunning     = true;
 
-  // Dot animasyonu
   const dot = document.getElementById('ai-dot');
   dot.style.background = 'var(--amber)';
-  dot.style.animation  = 'pulse 0.5s infinite';
 
-  // Mesaj oluştur
-  const userMsg = `Anlık durum: ${event}. Aktif alarmlar: ${alarms.join(', ') || 'yok'}. Sürücü durumu: ${stateKey}.`;
+  // Canvas'tan frame al
+  let imageBase64 = null;
+  try {
+    const tmp = document.createElement('canvas');
+    tmp.width = 320; tmp.height = 240;
+    tmp.getContext('2d').drawImage(canvas, 0, 0, 320, 240);
+    imageBase64 = tmp.toDataURL('image/jpeg', 0.7).split(',')[1];
+  } catch(e) {}
 
-  aiHistory.push({ role: 'user', content: userMsg });
-  if (aiHistory.length > 10) aiHistory = aiHistory.slice(-10); // son 5 tur
+  if (!imageBase64) {
+    aiRunning = false;
+    dot.style.background = 'var(--muted)';
+    return;
+  }
+
+  // Her seferinde TERTEMİZ mesaj — geçmiş YOK, sadece görüntü
+  const messages = [{
+    role: 'user',
+    content: [
+      { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: imageBase64 } },
+      { type: 'text', text: 'Bu kişiyi izliyorsun. Ne görüyorsun?' }
+    ]
+  }];
 
   try {
     const res = await fetch('/api/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ system: AI_SYSTEM, messages: aiHistory })
+      body: JSON.stringify({ system: AI_SYSTEM, messages })
     });
 
     const data = await res.json();
     const text = data.content?.[0]?.text || '';
-    if (!text) throw new Error('boş yanıt');
+    if (!text) throw new Error('boş');
 
-    // Geçmişe ekle
-    aiHistory.push({ role: 'assistant', content: text });
     lastAiText = text;
-
-    // Bubble'a yaz — harf harf (typing efekti)
     const bubble = document.getElementById('ai-bubble');
     bubble.style.opacity = '1';
     bubble.textContent   = '';
 
-    // Renk — duruma göre
     if (stateKey === 'sleeping') bubble.style.color = 'var(--red)';
     else if (stateKey === 'phone') bubble.style.color = '#ff2d2d';
     else if (stateKey === 'drowsy') bubble.style.color = 'var(--orange)';
     else if (stateKey === 'ok') bubble.style.color = 'var(--green)';
     else bubble.style.color = 'var(--amber)';
 
-    // Typing animasyonu
     let i = 0;
-    const type = setInterval(() => {
+    const timer = setInterval(() => {
       bubble.textContent += text[i++];
       if (i >= text.length) {
-        clearInterval(type);
+        clearInterval(timer);
         document.getElementById('ai-speak-btn').style.display = 'block';
         dot.style.background = stateKey === 'ok' ? 'var(--green)' : 'var(--amber)';
-        dot.style.animation  = '';
-        // Acil durumlarda otomatik sesli oku
         if (urgency === 'urgent') speakLast();
       }
     }, 28);
@@ -991,7 +1045,6 @@ async function triggerAI(event, urgency = 'normal') {
   } catch(e) {
     document.getElementById('ai-bubble').textContent = '...';
     dot.style.background = 'var(--muted)';
-    dot.style.animation  = '';
   }
 
   aiRunning = false;
@@ -1007,19 +1060,79 @@ function speakLast() {
 
 // Periyodik normal durum kontrolü
 function startAILoop() {
-  // İlk mesaj
-  setTimeout(() => triggerAI('Sistem devreye girdi, sürücü izleniyor.', 'normal'), 3000);
+  // Kalibrasyon bitince ilk tarama
+  setTimeout(() => triggerAI('start', 'normal'), 3000);
 
-  setInterval(() => {
+  // Her 10sn'de bir — alarm olsun olmasın frame gönder
+  // AI kendi karar verir: telefon var mı, uyukluyor mu vs.
+  setInterval(async () => {
+    if (!calib.isDone) return;
+    if (aiRunning) return;
+
+    aiRunning = true;
+    const dot = document.getElementById('ai-dot');
+    dot.style.background = 'var(--amber)';
+
+    let imageBase64 = null;
+    try {
+      const tmp = document.createElement('canvas');
+      tmp.width = 320; tmp.height = 240;
+      tmp.getContext('2d').drawImage(canvas, 0, 0, 320, 240);
+      imageBase64 = tmp.toDataURL('image/jpeg', 0.7).split(',')[1];
+    } catch(e) {}
+
+    if (!imageBase64) { aiRunning = false; dot.style.background = 'var(--muted)'; return; }
+
     const alarms = Array.from(activeAlarms);
-    const earVal  = parseFloat(document.getElementById('val-ear')?.textContent || 0.3);
-    const percVal = parseFloat(document.getElementById('perclos-val')?.textContent || 0);
-    const state   = getStateKey(alarms, earVal, percVal);
 
-    if (alarms.length === 0 && state === 'ok') {
-      triggerAI('Sürücü normal, alarmlar yok.', 'normal');
+    try {
+      const res = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          system: AI_SYSTEM,
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: imageBase64 } },
+              { type: 'text', text: `Sürücüyü izliyorsun. Şu an aktif alarmlar: ${alarms.join(', ') || 'yok'}. Ne görüyorsun?` }
+            ]
+          }]
+        })
+      });
+
+      const data = await res.json();
+      const text = data.content?.[0]?.text || '';
+      if (!text) throw new Error('boş');
+
+      lastAiText = text;
+      const bubble = document.getElementById('ai-bubble');
+      bubble.style.opacity = '1';
+      bubble.textContent = '';
+
+      // Renk — AI cevabında tehlike kelimesi var mı?
+      const danger  = /telefon|uyukl|uyu|kapat|tehlike/i.test(text);
+      const warning = /ayna|dikkat|bak|esne/i.test(text);
+      bubble.style.color = danger ? 'var(--red)' : warning ? 'var(--amber)' : 'var(--green)';
+
+      let i = 0;
+      const timer = setInterval(() => {
+        bubble.textContent += text[i++];
+        if (i >= text.length) {
+          clearInterval(timer);
+          document.getElementById('ai-speak-btn').style.display = 'block';
+          dot.style.background = danger ? 'var(--red)' : 'var(--green)';
+          // Tehlikeli durumda sesli oku
+          if (danger) speakLast();
+        }
+      }, 28);
+
+    } catch(e) {
+      dot.style.background = 'var(--muted)';
     }
-  }, 20000); // 20sn'de bir durum normale döndüyse not düş
+
+    aiRunning = false;
+  }, 10000); // 10 saniyede bir
 }
 async function startSystem() {
   document.getElementById('start-screen').style.display = 'none';
@@ -1037,14 +1150,6 @@ async function startSystem() {
   ro.observe(wrap);
   canvas.width  = wrap.clientWidth;
   canvas.height = wrap.clientHeight;
-
-  // COCO-SSD
-  try {
-    cocoModel = await cocoSsd.load();
-    document.getElementById('load-text').textContent = 'MEDIAPIPE YÜKLENİYOR...';
-  } catch(e) {
-    console.warn('COCO-SSD yüklenemedi:', e);
-  }
 
   // MediaPipe FaceMesh
   faceMesh = new FaceMesh({ locateFile: f =>
