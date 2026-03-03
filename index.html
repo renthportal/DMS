@@ -1019,9 +1019,15 @@ async function runYoloInference() {
         .expandDims(0); // [1,640,640,3]
     });
 
-    const result = await yoloModel.executeAsync(input);
+    const result = yoloModel.execute(input);
     const data = await result.data();
-    const shape = result.shape; // [1, 8, 8400] — 4 box + 4 class scores
+    const shape = result.shape;
+    
+    // DEBUG — her zaman logla (sonra kaldırırız)
+    console.log('YOLO shape:', shape, '| data len:', data.length);
+    const maxVal = Math.max(...Array.from(data.slice(0, 500)));
+    console.log('Max value in first 500:', maxVal.toFixed(4));
+    
     input.dispose();
     result.dispose();
 
