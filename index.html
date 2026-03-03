@@ -1054,9 +1054,11 @@ async function runYoloInference() {
       const bw = w * scaleX;
       const bh = h * scaleY;
 
-      // Alarm tetikle
-      if (maxClass === 1 || maxClass === 2) triggerPhoneAlarm();
-      if (maxClass === 0 || maxClass === 3) triggerAlarm('SİGARA', '#ff6600');
+      // Alarm tetikle — SADECE "phone" (2) ve "smoking" (3) class'ı
+      // "on-phone" (1) class'ı güvenilir değil, telefonsuz da tetikleniyor
+      if (maxClass === 2) triggerPhoneAlarm();
+      else if (maxClass === 0 || maxClass === 3) triggerAlarm('SİGARA', '#ff6600');
+      else continue; // on-phone class'ını yoksay
 
       // Çerçeve çiz
       const color = YOLO_COLORS[maxClass];
