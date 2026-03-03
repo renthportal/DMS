@@ -8,13 +8,11 @@ export default async function handler(req, res) {
   try {
     const { image } = req.body;
     const apiKey = process.env.ROBOFLOW_API_KEY;
-
-    if (!apiKey) {
-      return res.status(500).json({ error: 'ROBOFLOW_API_KEY not set' });
-    }
+    if (!apiKey) return res.status(500).json({ error: 'ROBOFLOW_API_KEY not set' });
+    if (!image)  return res.status(400).json({ error: 'No image provided' });
 
     const response = await fetch(
-      `https://detect.roboflow.com/pedestrian-cell-phone-detection/14?api_key=${apiKey}&confidence=20&overlap=30`,
+      `https://detect.roboflow.com/pedestrian-cell-phone-detection/14?api_key=${apiKey}&confidence=15&overlap=30`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
