@@ -924,15 +924,13 @@ function onResults(results) {
   if (now - lastYolo > CFG.YOLO_INTERVAL) {
     lastYolo = now;
 
-    // Video elementinden temiz frame al (overlay çizimler olmadan)
     const video = document.getElementById('video');
     if (!video || video.readyState < 2) return;
 
     const tmpCanvas = document.createElement('canvas');
     tmpCanvas.width  = 640;
     tmpCanvas.height = 480;
-    const tmpCtx = tmpCanvas.getContext('2d');
-    tmpCtx.drawImage(video, 0, 0, 640, 480);
+    tmpCanvas.getContext('2d').drawImage(video, 0, 0, 640, 480);
     const base64 = tmpCanvas.toDataURL('image/jpeg', 0.92).split(',')[1];
 
     const scaleX = canvas.width  / 640;
@@ -944,30 +942,19 @@ function onResults(results) {
       body: JSON.stringify({ image: base64 })
     }).then(r => r.json()).then(data => {
       if (!data.predictions) return;
-
       for (const p of data.predictions) {
+        // SADECE "on-phone" class — "phone" class'ını yoksay
+        if (p.class !== 'on-phone') continue;
         if (p.confidence < CFG.PHONE_CONF) continue;
         triggerPhoneAlarm();
 
-        // Koordinatları orijinal canvas boyutuna ölçekle
         const bx = (p.x - p.width  / 2) * scaleX;
         const by = (p.y - p.height / 2) * scaleY;
         const bw = p.width  * scaleX;
         const bh = p.height * scaleY;
-
-        // Kırmızı çerçeve
         ctx.strokeStyle = '#ff2d2d';
         ctx.lineWidth = 4;
         ctx.strokeRect(bx, by, bw, bh);
-        // Köşe işaretleri
-        const cs = 18;
-        ctx.lineWidth = 3;
-        [[bx,by,1,1],[bx+bw,by,-1,1],[bx,by+bh,1,-1],[bx+bw,by+bh,-1,-1]].forEach(([cx,cy,sx,sy]) => {
-          ctx.beginPath();
-          ctx.moveTo(cx, cy+sy*cs); ctx.lineTo(cx,cy); ctx.lineTo(cx+sx*cs,cy);
-          ctx.stroke();
-        });
-        // Etiket
         ctx.fillStyle = '#ff2d2d';
         ctx.fillRect(bx, Math.max(0,by-24), 200, 24);
         ctx.fillStyle = '#fff';
@@ -977,6 +964,7 @@ function onResults(results) {
     }).catch(() => {});
   }
 }
+
 
 async function startSystem() {
   document.getElementById('start-screen').style.display = 'none';
@@ -1028,11 +1016,11 @@ async function startSystem() {
     width: 1280, height: 720
   });
 
-  // Hands ayrı interval — devre dışı (yanlış alarm veriyor)
-  // setInterval(async () => {
-  //   const v = document.getElementById('video');
-  //   if (v && v.readyState >= 2) await hands.send({ image: v });
-  // }, 300);
+  // Hands ayrı interval — her 300ms bir frame gönder
+  setInterval(async () => {
+    const v = document.getElementById('video');
+    if (v && v.readyState >= 2) await hands.send({ image: v });
+  }, 300);
 
   document.getElementById('load-text').textContent = 'KAMERA AÇILIYOR...';
   await camera.start();
@@ -1051,20 +1039,26 @@ function onHandResults(results) {
     return;
   }
 
-  const { leftEar, rightEar } = lastFaceEarPos;
+  const { leftEar, rightEar, nose } = lastFaceEarPos;
   let handNear = false;
 
   for (const handLm of results.multiHandLandmarks) {
-    // El bilegi (0) ve orta parmak ucu (12) kullan
-    const wrist = handLm[0];
-    const mid   = handLm[12];
+    const wrist     = handLm[0];
+    const indexTip  = handLm[8];   // işaret parmağı ucu
+    const pinkyBase = handLm[17];  // serçe parmak tabanı
 
-    // Her iki kulak için mesafe kontrol et
+    // Elin merkezi
+    const handCx = (wrist.x + indexTip.x + pinkyBase.x) / 3;
+    const handCy = (wrist.y + indexTip.y + pinkyBase.y) / 3;
+
     for (const ear of [leftEar, rightEar]) {
-      const dWrist = Math.hypot(wrist.x - ear.x, wrist.y - ear.y);
-      const dMid   = Math.hypot(mid.x   - ear.x, mid.y   - ear.y);
-      // 0.25 = normalize mesafe — yüz genişliğinin yaklaşık yarısı
-      if (dWrist < 0.25 || dMid < 0.25) {
+      const dist = Math.hypot(handCx - ear.x, handCy - ear.y);
+      // Y ekseni: el kulak yüksekliğinde mi? (±0.15)
+      const yClose = Math.abs(handCy - ear.y) < 0.18;
+      // Mesafe: kulağa yakın mı?
+      const xClose = dist < 0.22;
+
+      if (xClose && yClose) {
         handNear = true;
         break;
       }
@@ -1075,8 +1069,7 @@ function onHandResults(results) {
   const nowSec = Date.now() / 1000;
   if (handNear) {
     if (!handNearEarAt) handNearEarAt = nowSec;
-    // 1.5 saniye elde tutulursa → telefon alarmı
-    else if (nowSec - handNearEarAt > 1.5) {
+    else if (nowSec - handNearEarAt > 2.0) {
       triggerPhoneAlarm();
     }
   } else {
