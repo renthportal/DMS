@@ -914,10 +914,13 @@ function onResults(results) {
 
     // Canvas'ı base64'e çevir
     const tmpCanvas = document.createElement('canvas');
-    tmpCanvas.width  = 416;
-    tmpCanvas.height = 416;
-    tmpCanvas.getContext('2d').drawImage(canvas, 0, 0, 416, 416);
-    const base64 = tmpCanvas.toDataURL('image/jpeg', 0.7).split(',')[1];
+    tmpCanvas.width  = 640;
+    tmpCanvas.height = 480;
+    tmpCanvas.getContext('2d').drawImage(canvas, 0, 0, 640, 480);
+    const base64 = tmpCanvas.toDataURL('image/jpeg', 0.95).split(',')[1];
+
+    const scaleX = canvas.width  / 640;
+    const scaleY = canvas.height / 480;
 
     fetch('/api/roboflow', {
       method: 'POST',
@@ -925,8 +928,6 @@ function onResults(results) {
       body: JSON.stringify({ image: base64 })
     }).then(r => r.json()).then(data => {
       if (!data.predictions) return;
-      const scaleX = canvas.width  / 416;
-      const scaleY = canvas.height / 416;
 
       for (const p of data.predictions) {
         if (p.confidence < CFG.PHONE_CONF) continue;
