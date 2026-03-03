@@ -1028,13 +1028,11 @@ async function startSystem() {
     width: 1280, height: 720
   });
 
-  // Hands ayrı interval — her 300ms bir frame gönder
-  setInterval(async () => {
-    const v = document.getElementById('video');
-    if (v && v.readyState >= 2) {
-      await hands.send({ image: v });
-    }
-  }, 300);
+  // Hands ayrı interval — devre dışı (yanlış alarm veriyor)
+  // setInterval(async () => {
+  //   const v = document.getElementById('video');
+  //   if (v && v.readyState >= 2) await hands.send({ image: v });
+  // }, 300);
 
   document.getElementById('load-text').textContent = 'KAMERA AÇILIYOR...';
   await camera.start();
