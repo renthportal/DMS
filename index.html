@@ -462,7 +462,7 @@ const CFG = {
   POSE_SEC:      3.0,
   MAR_THR:       0.60,
   YAWN_SEC:      2.0,
-  PHONE_CONF:    0.55,
+  PHONE_CONF:    0.50,
   ALARM_CD:      5.0,
   YOLO_INTERVAL: 500,
 };
@@ -943,8 +943,8 @@ function onResults(results) {
     }).then(r => r.json()).then(data => {
       if (!data.predictions) return;
       for (const p of data.predictions) {
-        // SADECE "on-phone" class — "phone" class'ını yoksay
-        if (p.class !== 'on-phone') continue;
+        // "phone" class varsa alarm — "on-phone" class güvenilir değil
+        if (p.class !== 'phone') continue;
         if (p.confidence < CFG.PHONE_CONF) continue;
         triggerPhoneAlarm();
 
