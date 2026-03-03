@@ -8,6 +8,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow+Condensed:wght@300;400;600;700&display=swap" rel="stylesheet">
@@ -482,7 +483,6 @@ let gazeAwayAt    = null;
 let headAwayAt    = null;
 let tiredAt       = null;  // YORGUN için zamanlayıcı
 let lastAlarm     = {};
-let lastYolo      = 0;
 let alarmCount    = 0;
 let startTime     = Date.now();
 let fps           = 0, fpsFrames = 0, fpsLast = Date.now();
@@ -492,7 +492,9 @@ let alarmClearTimers = {};
 let faceMesh, camera, hands;
 let lastHandNearEar = 0;
 let handNearEarAt   = null;
-let lastFaceEarPos  = null; // yüz landmark'tan kulak konumu
+let lastFaceEarPos  = null;
+let yoloModel       = null;  // TFjs offline model
+let lastYoloInfer   = 0;
 
 // ─── OTOMATİK KALİBRASYON ────────────────────────────────────────────────────
 let calib = {
@@ -660,6 +662,7 @@ function triggerAlarm(type, color) {
     'ESNIYOR':    [[440,0.3]],
     'UZAK BAKIŞ': [[550,0.2],[550,0.2]],
     'DİKKATSİZ':  [[500,0.2]],
+    'SİGARA':     [[700,0.2],[500,0.2]],
   };
   playBeep(0, 0, beepMap[type] || [[660,0.3]]);
 
@@ -921,47 +924,10 @@ function onResults(results) {
   }
 
   // Telefon tespiti — Roboflow API (her 500ms)
-  if (now - lastYolo > CFG.YOLO_INTERVAL) {
-    lastYolo = now;
-
-    const video = document.getElementById('video');
-    if (!video || video.readyState < 2) return;
-
-    const tmpCanvas = document.createElement('canvas');
-    tmpCanvas.width  = 640;
-    tmpCanvas.height = 480;
-    tmpCanvas.getContext('2d').drawImage(video, 0, 0, 640, 480);
-    const base64 = tmpCanvas.toDataURL('image/jpeg', 0.92).split(',')[1];
-
-    const scaleX = canvas.width  / 640;
-    const scaleY = canvas.height / 480;
-
-    fetch('/api/roboflow', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image: base64 })
-    }).then(r => r.json()).then(data => {
-      if (!data.predictions) return;
-      for (const p of data.predictions) {
-        // "phone" class varsa alarm — "on-phone" class güvenilir değil
-        if (p.class !== 'phone') continue;
-        if (p.confidence < CFG.PHONE_CONF) continue;
-        triggerPhoneAlarm();
-
-        const bx = (p.x - p.width  / 2) * scaleX;
-        const by = (p.y - p.height / 2) * scaleY;
-        const bw = p.width  * scaleX;
-        const bh = p.height * scaleY;
-        ctx.strokeStyle = '#ff2d2d';
-        ctx.lineWidth = 4;
-        ctx.strokeRect(bx, by, bw, bh);
-        ctx.fillStyle = '#ff2d2d';
-        ctx.fillRect(bx, Math.max(0,by-24), 200, 24);
-        ctx.fillStyle = '#fff';
-        ctx.font = 'bold 13px monospace';
-        ctx.fillText(`📱 TELEFON! %${(p.confidence*100).toFixed(0)}`, bx+5, Math.max(16,by-6));
-      }
-    }).catch(() => {});
+  // ─── LOCAL YOLO TESPİTİ ────────────────────────────────────────────────────
+  if (yoloModel && now - lastYoloInfer > CFG.YOLO_INTERVAL) {
+    lastYoloInfer = now;
+    runYoloInference();
   }
 }
 
@@ -1022,13 +988,102 @@ async function startSystem() {
     if (v && v.readyState >= 2) await hands.send({ image: v });
   }, 300);
 
-  document.getElementById('load-text').textContent = 'KAMERA AÇILIYOR...';
+  document.getElementById('load-text').textContent = 'SİSTEM YÜKLENİYOR...';
   await camera.start();
+  loadYoloModel(); // async — arka planda yükle
 
   document.getElementById('loading').style.display = 'none';
   document.getElementById('live-dot').className = 'dot live';
   document.getElementById('live-txt').textContent = 'CANLI';
   startTime = Date.now();
+}
+
+// ─── LOCAL YOLO INFERENCE ────────────────────────────────────────────────────
+// Classes: 0:cigarettes 1:on-phone 2:phone 3:smoking
+const YOLO_CLASSES  = ['cigarettes', 'on-phone', 'phone', 'smoking'];
+const YOLO_COLORS   = ['#ff9900', '#ff2d2d', '#ff2d2d', '#ff6600'];
+const YOLO_LABELS   = ['🚬 SİGARA', '📱 TELEFON', '📱 TELEFON', '🚬 SİGARA'];
+
+async function runYoloInference() {
+  const video = document.getElementById('video');
+  if (!video || video.readyState < 2) return;
+
+  tf.engine().startScope();
+  try {
+    // 640x640 input
+    const input = tf.tidy(() => {
+      return tf.browser.fromPixels(video)
+        .resizeBilinear([640, 640])
+        .toFloat()
+        .div(255.0)
+        .expandDims(0); // [1,640,640,3]
+    });
+
+    const result = await yoloModel.executeAsync(input);
+    const data = await result.data();
+    const shape = result.shape; // [1, 8, 8400] — 4 box + 4 class scores
+    input.dispose();
+    result.dispose();
+
+    const numBoxes  = shape[shape.length - 1];
+    const numFields = shape[shape.length - 2]; // 8 = 4 coords + 4 classes
+
+    const scaleX = canvas.width  / 640;
+    const scaleY = canvas.height / 640;
+
+    for (let i = 0; i < numBoxes; i++) {
+      // cx, cy, w, h
+      const cx = data[0 * numBoxes + i];
+      const cy = data[1 * numBoxes + i];
+      const w  = data[2 * numBoxes + i];
+      const h  = data[3 * numBoxes + i];
+
+      // Class scores
+      let maxScore = 0, maxClass = -1;
+      for (let c = 0; c < 4; c++) {
+        const score = data[(4 + c) * numBoxes + i];
+        if (score > maxScore) { maxScore = score; maxClass = c; }
+      }
+
+      if (maxScore < CFG.PHONE_CONF) continue;
+      if (maxClass < 0) continue;
+
+      // Koordinatları canvas'a çevir
+      const bx = (cx - w / 2) * scaleX;
+      const by = (cy - h / 2) * scaleY;
+      const bw = w * scaleX;
+      const bh = h * scaleY;
+
+      // Alarm tetikle
+      if (maxClass === 1 || maxClass === 2) triggerPhoneAlarm();
+      if (maxClass === 0 || maxClass === 3) triggerAlarm('SİGARA', '#ff6600');
+
+      // Çerçeve çiz
+      const color = YOLO_COLORS[maxClass];
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3;
+      ctx.strokeRect(bx, by, bw, bh);
+      ctx.fillStyle = color;
+      ctx.fillRect(bx, Math.max(0, by - 22), 180, 22);
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 12px monospace';
+      ctx.fillText(`${YOLO_LABELS[maxClass]} %${(maxScore*100).toFixed(0)}`, bx+4, Math.max(14, by-5));
+    }
+  } catch(e) {
+    console.warn('YOLO inference error:', e);
+  }
+  tf.engine().endScope();
+}
+
+async function loadYoloModel() {
+  try {
+    yoloModel = await tf.loadGraphModel('/model/model.json');
+    addLog('✓ OFFLINE MODEL YÜKLENDİ', '#22c55e');
+    console.log('YOLO model loaded');
+  } catch(e) {
+    console.warn('Model yüklenemedi:', e);
+    addLog('⚠ Model yüklenemedi', '#f59e0b');
+  }
 }
 
 // ─── EL TESPİTİ — KULAĞA YAKIN MI? ──────────────────────────────────────────
