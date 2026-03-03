@@ -461,7 +461,7 @@ const CFG = {
   POSE_SEC:      3.0,
   MAR_THR:       0.60,
   YAWN_SEC:      2.0,
-  PHONE_CONF:    0.35,
+  PHONE_CONF:    0.20,
   ALARM_CD:      5.0,
   YOLO_INTERVAL: 500,
 };
@@ -524,17 +524,18 @@ function runAutoCalibration(ear, pitch, yaw) {
 const dist = (a, b) => Math.hypot(a[0]-b[0], a[1]-b[1]);
 
 function lmPt(lm, i, w, h) { return [lm[i].x*w, lm[i].y*h]; }
+function lmN(lm, i)         { return [lm[i].x,   lm[i].y];   } // normalize (0-1)
 
-function calcEAR(lm, idx, w, h) {
-  const p = idx.map(i => lmPt(lm, i, w, h));
+function calcEAR(lm, idx) {
+  const p = idx.map(i => lmN(lm, i));
   const A = dist(p[1], p[5]);
   const B = dist(p[2], p[4]);
   const C = dist(p[0], p[3]);
   return (A + B) / (2 * C + 1e-6);
 }
 
-function calcMAR(lm, w, h) {
-  const p = MOUTH.map(i => lmPt(lm, i, w, h));
+function calcMAR(lm) {
+  const p = MOUTH.map(i => lmN(lm, i));
   const vert1 = dist(p[2], p[3]);
   const vert2 = dist(p[4], p[5]);
   const horiz = dist(p[0], p[1]);
@@ -784,10 +785,10 @@ function onResults(results) {
   const nowSec = now / 1000;
 
   // Önce metrikleri hesapla
-  const earL = calcEAR(lm, L_EYE, w, h);
-  const earR = calcEAR(lm, R_EYE, w, h);
+  const earL = calcEAR(lm, L_EYE);
+  const earR = calcEAR(lm, R_EYE);
   const ear  = (earL + earR) / 2;
-  const mar  = calcMAR(lm, w, h);
+  const mar  = calcMAR(lm);
   const {pitch, yaw} = calcHeadTilt(lm, w, h);
 
   // OTOMATİK KALİBRASYON — bitene kadar sadece ilerleme göster
@@ -912,12 +913,16 @@ function onResults(results) {
   if (now - lastYolo > CFG.YOLO_INTERVAL) {
     lastYolo = now;
 
-    // Canvas'ı base64'e çevir
+    // Video elementinden temiz frame al (overlay çizimler olmadan)
+    const video = document.getElementById('video');
+    if (!video || video.readyState < 2) return;
+
     const tmpCanvas = document.createElement('canvas');
     tmpCanvas.width  = 640;
     tmpCanvas.height = 480;
-    tmpCanvas.getContext('2d').drawImage(canvas, 0, 0, 640, 480);
-    const base64 = tmpCanvas.toDataURL('image/jpeg', 0.95).split(',')[1];
+    const tmpCtx = tmpCanvas.getContext('2d');
+    tmpCtx.drawImage(video, 0, 0, 640, 480);
+    const base64 = tmpCanvas.toDataURL('image/jpeg', 0.92).split(',')[1];
 
     const scaleX = canvas.width  / 640;
     const scaleY = canvas.height / 480;
