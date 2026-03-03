@@ -1094,50 +1094,11 @@ async function loadYoloModel() {
   }
 }
 
-// ─── EL TESPİTİ — KULAĞA YAKIN MI? ──────────────────────────────────────────
+// ─── EL TESPİTİ ─────────────────────────────────────────────────────────────
+// El-kulak yakınlığı ile telefon tespiti devre dışı bırakıldı.
+// Sebep: Kaşınma, saç düzeltme gibi normal hareketlerde yanlış alarm üretiyordu.
+// Telefon tespiti artık yalnızca YOLO modeli (görsel tespit) ile yapılıyor.
 function onHandResults(results) {
-  if (!lastFaceEarPos) return;
-  if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
-    handNearEarAt = null;
-    return;
-  }
-
-  const { leftEar, rightEar, nose } = lastFaceEarPos;
-  let handNear = false;
-
-  for (const handLm of results.multiHandLandmarks) {
-    const wrist     = handLm[0];
-    const indexTip  = handLm[8];   // işaret parmağı ucu
-    const pinkyBase = handLm[17];  // serçe parmak tabanı
-
-    // Elin merkezi
-    const handCx = (wrist.x + indexTip.x + pinkyBase.x) / 3;
-    const handCy = (wrist.y + indexTip.y + pinkyBase.y) / 3;
-
-    for (const ear of [leftEar, rightEar]) {
-      const dist = Math.hypot(handCx - ear.x, handCy - ear.y);
-      // Y ekseni: el kulak yüksekliğinde mi? (±0.15)
-      const yClose = Math.abs(handCy - ear.y) < 0.18;
-      // Mesafe: kulağa yakın mı?
-      const xClose = dist < 0.22;
-
-      if (xClose && yClose) {
-        handNear = true;
-        break;
-      }
-    }
-    if (handNear) break;
-  }
-
-  const nowSec = Date.now() / 1000;
-  if (handNear) {
-    if (!handNearEarAt) handNearEarAt = nowSec;
-    else if (nowSec - handNearEarAt > 2.0) {
-      triggerPhoneAlarm();
-    }
-  } else {
-    handNearEarAt = null;
-  }
 }
 </script>
 </body>
