@@ -7,6 +7,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow+Condensed:wght@300;400;600;700&display=swap" rel="stylesheet">
@@ -461,7 +462,7 @@ const CFG = {
   POSE_SEC:      3.0,
   MAR_THR:       0.60,
   YAWN_SEC:      2.0,
-  PHONE_CONF:    0.20,
+  PHONE_CONF:    0.55,
   ALARM_CD:      5.0,
   YOLO_INTERVAL: 500,
 };
@@ -488,7 +489,10 @@ let fps           = 0, fpsFrames = 0, fpsLast = Date.now();
 let cocoModel     = null;
 let activeAlarms  = new Set();
 let alarmClearTimers = {};
-let faceMesh, camera;
+let faceMesh, camera, hands;
+let lastHandNearEar = 0;
+let handNearEarAt   = null;
+let lastFaceEarPos  = null; // yüz landmark'tan kulak konumu
 
 // ─── OTOMATİK KALİBRASYON ────────────────────────────────────────────────────
 let calib = {
@@ -791,6 +795,13 @@ function onResults(results) {
   const mar  = calcMAR(lm);
   const {pitch, yaw} = calcHeadTilt(lm, w, h);
 
+  // Kulak konumlarını kaydet (el yakınlığı için)
+  lastFaceEarPos = {
+    leftEar:  { x: lm[234].x, y: lm[234].y },  // sol kulak
+    rightEar: { x: lm[454].x, y: lm[454].y },  // sağ kulak
+    nose:     { x: lm[1].x,   y: lm[1].y   }
+  };
+
   // OTOMATİK KALİBRASYON — bitene kadar sadece ilerleme göster
   if (!calib.isDone) {
     runAutoCalibration(ear, pitch, yaw);
@@ -996,7 +1007,19 @@ async function startSystem() {
   });
   faceMesh.onResults(onResults);
 
-  // Kamera
+  // MediaPipe Hands — el tespiti (telefon kulağa yakın mı?)
+  hands = new Hands({ locateFile: f =>
+    `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${f}`
+  });
+  hands.setOptions({
+    maxNumHands: 2,
+    modelComplexity: 0,
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5
+  });
+  hands.onResults(onHandResults);
+
+  // Kamera — sadece FaceMesh'e gönder (performans için)
   const video = document.getElementById('video');
   camera = new Camera(video, {
     onFrame: async () => {
@@ -1005,6 +1028,14 @@ async function startSystem() {
     width: 1280, height: 720
   });
 
+  // Hands ayrı interval — her 300ms bir frame gönder
+  setInterval(async () => {
+    const v = document.getElementById('video');
+    if (v && v.readyState >= 2) {
+      await hands.send({ image: v });
+    }
+  }, 300);
+
   document.getElementById('load-text').textContent = 'KAMERA AÇILIYOR...';
   await camera.start();
 
@@ -1012,6 +1043,47 @@ async function startSystem() {
   document.getElementById('live-dot').className = 'dot live';
   document.getElementById('live-txt').textContent = 'CANLI';
   startTime = Date.now();
+}
+
+// ─── EL TESPİTİ — KULAĞA YAKIN MI? ──────────────────────────────────────────
+function onHandResults(results) {
+  if (!lastFaceEarPos) return;
+  if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+    handNearEarAt = null;
+    return;
+  }
+
+  const { leftEar, rightEar } = lastFaceEarPos;
+  let handNear = false;
+
+  for (const handLm of results.multiHandLandmarks) {
+    // El bilegi (0) ve orta parmak ucu (12) kullan
+    const wrist = handLm[0];
+    const mid   = handLm[12];
+
+    // Her iki kulak için mesafe kontrol et
+    for (const ear of [leftEar, rightEar]) {
+      const dWrist = Math.hypot(wrist.x - ear.x, wrist.y - ear.y);
+      const dMid   = Math.hypot(mid.x   - ear.x, mid.y   - ear.y);
+      // 0.25 = normalize mesafe — yüz genişliğinin yaklaşık yarısı
+      if (dWrist < 0.25 || dMid < 0.25) {
+        handNear = true;
+        break;
+      }
+    }
+    if (handNear) break;
+  }
+
+  const nowSec = Date.now() / 1000;
+  if (handNear) {
+    if (!handNearEarAt) handNearEarAt = nowSec;
+    // 1.5 saniye elde tutulursa → telefon alarmı
+    else if (nowSec - handNearEarAt > 1.5) {
+      triggerPhoneAlarm();
+    }
+  } else {
+    handNearEarAt = null;
+  }
 }
 </script>
 </body>
