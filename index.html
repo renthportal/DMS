@@ -433,15 +433,6 @@
 
   <div id="active-alarms"></div>
 
-  <!-- AI CANLI GÖZLEMCI -->
-  <div id="ai-observer" style="border-top:1px solid var(--border);border-bottom:1px solid var(--border);padding:12px 16px;display:flex;flex-direction:column;gap:8px;">
-    <div style="display:flex;align-items:center;justify-content:space-between;">
-      <span style="font-size:10px;letter-spacing:.3em;color:var(--amber);text-transform:uppercase">AI Gözlemci</span>
-      <span id="ai-dot" style="width:6px;height:6px;border-radius:50%;background:var(--muted);display:inline-block"></span>
-    </div>
-    <div id="ai-bubble" style="font-size:12px;line-height:1.6;color:var(--text);min-height:52px;font-style:italic;opacity:0.7">Sistem başlatıldıktan sonra izleme başlar...</div>
-    <button id="ai-speak-btn" onclick="speakLast()" style="display:none;font-family:var(--mono);font-size:9px;letter-spacing:.15em;background:transparent;color:var(--muted);border:1px solid var(--border);padding:2px 8px;cursor:pointer;align-self:flex-start;">🔊 TEKRAR OKU</button>
-  </div>
 
   <div class="section-title" style="padding:10px 16px 6px;font-size:10px;letter-spacing:.3em;color:var(--muted)">ALARM GEÇMİŞİ</div>
   <div id="alert-log"></div>
@@ -470,7 +461,7 @@ const CFG = {
   POSE_SEC:      3.0,
   MAR_THR:       0.60,
   YAWN_SEC:      2.0,
-  PHONE_CONF:    0.55,
+  PHONE_CONF:    0.35,
   ALARM_CD:      5.0,
   YOLO_INTERVAL: 500,
 };
@@ -970,107 +961,10 @@ function onResults(results) {
   }
 }
 
-
-// ─── AI CANLI GÖZLEMCİ ───────────────────────────────────────────────────────
-let aiRunning  = false;
-let lastAiText = '';
-
-const AI_SYSTEM = `Sen bir araç güvenlik kamerasını izleyen görevlisin. Sana gelen her görüntüde sürücüyü gözlemle.
-
-SADECE GÖRDÜĞÜNÜ söyle — sayı, metrik, teknik terim KULLANMA.
-Örnek doğru: "Elinde telefon var, yola bakmıyor."
-Örnek doğru: "Gözleri ağırlaşıyor, uyukluyor gibi."
-Örnek doğru: "Normal görünüyor."
-Maksimum 1 cümle. Türkçe.`;
-
-
-function speakLast() {
-  if (!lastAiText || !window.speechSynthesis) return;
-  window.speechSynthesis.cancel();
-  const utt = new SpeechSynthesisUtterance(lastAiText);
-  utt.lang = 'tr-TR'; utt.rate = 0.9; utt.volume = 1.0;
-  window.speechSynthesis.speak(utt);
-}
-
-// Periyodik normal durum kontrolü
-function startAILoop() {
-  // Kalibrasyon bitince ilk tarama
-
-  // Her 10sn'de bir — alarm olsun olmasın frame gönder
-  // AI kendi karar verir: telefon var mı, uyukluyor mu vs.
-  setInterval(async () => {
-    if (!calib.isDone) return;
-    if (aiRunning) return;
-
-    aiRunning = true;
-    const dot = document.getElementById('ai-dot');
-    dot.style.background = 'var(--amber)';
-
-    let imageBase64 = null;
-    try {
-      const tmp = document.createElement('canvas');
-      tmp.width = 320; tmp.height = 240;
-      tmp.getContext('2d').drawImage(canvas, 0, 0, 320, 240);
-      imageBase64 = tmp.toDataURL('image/jpeg', 0.7).split(',')[1];
-    } catch(e) {}
-
-    if (!imageBase64) { aiRunning = false; dot.style.background = 'var(--muted)'; return; }
-
-    const alarms = Array.from(activeAlarms);
-
-    try {
-      const res = await fetch('/api/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          system: AI_SYSTEM,
-          messages: [{
-            role: 'user',
-            content: [
-              { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: imageBase64 } },
-              { type: 'text', text: `Sürücüyü izliyorsun. Şu an aktif alarmlar: ${alarms.join(', ') || 'yok'}. Ne görüyorsun?` }
-            ]
-          }]
-        })
-      });
-
-      const data = await res.json();
-      const text = data.content?.[0]?.text || '';
-      if (!text) throw new Error('boş');
-
-      lastAiText = text;
-      const bubble = document.getElementById('ai-bubble');
-      bubble.style.opacity = '1';
-      bubble.textContent = '';
-
-      // Renk — AI cevabında tehlike kelimesi var mı?
-      const danger  = /telefon|uyukl|uyu|kapat|tehlike/i.test(text);
-      const warning = /ayna|dikkat|bak|esne/i.test(text);
-      bubble.style.color = danger ? 'var(--red)' : warning ? 'var(--amber)' : 'var(--green)';
-
-      let i = 0;
-      const timer = setInterval(() => {
-        bubble.textContent += text[i++];
-        if (i >= text.length) {
-          clearInterval(timer);
-          document.getElementById('ai-speak-btn').style.display = 'block';
-          dot.style.background = danger ? 'var(--red)' : 'var(--green)';
-          // Tehlikeli durumda sesli oku
-          if (danger) speakLast();
-        }
-      }, 28);
-
-    } catch(e) {
-      dot.style.background = 'var(--muted)';
-    }
-
-    aiRunning = false;
-  }, 10000); // 10 saniyede bir
-}
 async function startSystem() {
   document.getElementById('start-screen').style.display = 'none';
   document.getElementById('loading').style.display = 'flex';
-  document.getElementById('load-text').textContent = 'COCO-SSD YÜKLENİYOR...';
+  document.getElementById('load-text').textContent = 'SİSTEM YÜKLENİYOR...';
 
   // Canvas boyut
   canvas = document.getElementById('output-canvas');
@@ -1112,7 +1006,6 @@ async function startSystem() {
   document.getElementById('live-dot').className = 'dot live';
   document.getElementById('live-txt').textContent = 'CANLI';
   startTime = Date.now();
-  startAILoop();
 }
 </script>
 </body>
