@@ -499,6 +499,36 @@ let activeAlarms  = new Set();
 let alarmClearTimers = {};
 let faceMesh, camera;
 
+// ─── OTOMATİK KALİBRASYON ────────────────────────────────────────────────────
+let calib = {
+  isDone:     false,
+  samples:    [],
+  maxSamples: 150,
+  baseEAR:    0.22,
+  basePitch:  0,
+  baseYaw:    0
+};
+
+function runAutoCalibration(ear, pitch, yaw) {
+  if (calib.isDone) return;
+  if (ear > 0.15) calib.samples.push({ ear, pitch, yaw });
+  const pct = Math.round(calib.samples.length / calib.maxSamples * 100);
+  const el = document.getElementById('live-txt');
+  el.textContent = `KALİBRASYON %${pct}`;
+  el.style.color = 'var(--cyan)';
+  if (calib.samples.length >= calib.maxSamples) {
+    const n = calib.maxSamples;
+    const sum = calib.samples.reduce((a,b) => ({ ear: a.ear+b.ear, pitch: a.pitch+b.pitch, yaw: a.yaw+b.yaw }));
+    calib.baseEAR   = sum.ear   / n;
+    calib.basePitch = sum.pitch / n;
+    calib.baseYaw   = sum.yaw   / n;
+    calib.isDone = true;
+    el.textContent = 'SİSTEM AKTİF';
+    el.style.color = '';
+    addLog('✓ KALİBRASYON TAMAMLANDI', '#22c55e');
+  }
+}
+
 // ─── UTILS ───────────────────────────────────────────────────────────────────
 const dist = (a, b) => Math.hypot(a[0]-b[0], a[1]-b[1]);
 
@@ -762,15 +792,29 @@ function onResults(results) {
   const lm = results.multiFaceLandmarks[0];
   const nowSec = now / 1000;
 
-  // EAR
+  // Önce metrikleri hesapla
   const earL = calcEAR(lm, L_EYE, w, h);
   const earR = calcEAR(lm, R_EYE, w, h);
   const ear  = (earL + earR) / 2;
+  const mar  = calcMAR(lm, w, h);
+  const {pitch, yaw} = calcHeadTilt(lm, w, h);
+
+  // OTOMATİK KALİBRASYON — bitene kadar sadece ilerleme göster
+  if (!calib.isDone) {
+    runAutoCalibration(ear, pitch, yaw);
+    document.getElementById('val-ear').textContent = ear.toFixed(3);
+    return;
+  }
+
+  // Dinamik EAR eşiği
+  const dynamicEarThr = calib.baseEAR * 0.75;
+
+  // EAR
   document.getElementById('val-ear').textContent = ear.toFixed(3);
-  setMetric('ear', ear, 0, 0.4, CFG.EAR_THR, false);
+  setMetric('ear', ear, 0, 0.4, dynamicEarThr, false);
 
   // PERCLOS
-  perclosBuffer.push(ear < CFG.EAR_THR ? 1 : 0);
+  perclosBuffer.push(ear < dynamicEarThr ? 1 : 0);
   const perclos = calcPerclos();
   const pPct = (perclos * 100).toFixed(1);
   document.getElementById('perclos-val').textContent = pPct + '%';
@@ -779,7 +823,7 @@ function onResults(results) {
   pFill.style.background = perclos > CFG.PERCLOS_THR ? 'var(--red)' : 'var(--amber)';
 
   // Uyuklama
-  if (ear < CFG.EAR_THR) {
+  if (ear < dynamicEarThr) {
     if (!eyeClosedAt) eyeClosedAt = nowSec;
     else if (nowSec - eyeClosedAt > CFG.EAR_SEC) triggerAlarm('UYUYOR', '#ef4444');
   } else { eyeClosedAt = null; }
@@ -790,7 +834,6 @@ function onResults(results) {
   } else { tiredAt = null; }
 
   // MAR (esneme)
-  const mar = calcMAR(lm, w, h);
   document.getElementById('val-mar').textContent = mar.toFixed(3);
   setMetric('mar', mar, 0, 1, CFG.MAR_THR);
   if (mar > CFG.MAR_THR) {
@@ -813,7 +856,6 @@ function onResults(results) {
   } else { gazeAwayAt = null; }
 
   // Baş tilt — ayna bakışı vs dikkatsizlik
-  const {pitch, yaw} = calcHeadTilt(lm, w, h);
   const pitchAbnormal = pitch < calib.basePitch - 15 || pitch > calib.basePitch + 20;
   const yawFromBase   = yaw - calib.baseYaw;
 
