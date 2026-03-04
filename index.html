@@ -632,8 +632,13 @@ function playBeep(freq, duration, pattern) {
 function triggerPhoneAlarm() {
   const type = 'TELEFON';
   const now = Date.now() / 1000;
+
+  // Telefon görüldükçe temizleme timer'ını sıfırla (overlay kalsın)
+  clearTimeout(alarmClearTimers[type]);
+  alarmClearTimers[type] = setTimeout(() => { activeAlarms.delete(type); updateAlarmUI(); }, 3000);
+
   if (now - (lastAlarm[type] || 0) < CFG.ALARM_CD) {
-    activeAlarms.add(type); return;
+    return;  // Cooldown içinde: ses/log/sayaç tekrarlanmasın, timer zaten sıfırlandı
   }
   lastAlarm[type] = now;
   activeAlarms.add(type);
@@ -642,9 +647,6 @@ function triggerPhoneAlarm() {
   playBeep(0, 0, [[1200,0.12],[1200,0.12],[1200,0.12]]);
   addLog('📱 TELEFON KULLANIMI', '#ff2d2d');
   updateAlarmUI();
-
-  clearTimeout(alarmClearTimers[type]);
-  alarmClearTimers[type] = setTimeout(() => { activeAlarms.delete(type); updateAlarmUI(); }, 3000);
 }
 
 function triggerAlarm(type, color) {
