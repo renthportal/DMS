@@ -465,7 +465,7 @@ const CFG = {
   POSE_SEC:      3.0,
   MAR_THR:       0.60,
   YAWN_SEC:      2.0,
-  PHONE_CONF:    0.50,
+  PHONE_CONF:    0.70,
   ALARM_CD:      5.0,
   YOLO_INTERVAL: 500,
 };
@@ -1058,7 +1058,11 @@ async function runYoloInference() {
       const bh = h * scaleY;
 
       // Alarm tetikle — SADECE "phone" (2) class'ı
-      if (maxClass === 2) triggerPhoneAlarm();
+      // Minimum kutu boyutu: çok küçük tespitler (el, parmak vb.) filtrelenir
+      const minDim = Math.min(bw, bh);
+      const maxDim = Math.max(bw, bh);
+      const aspectRatio = maxDim / (minDim + 1e-6);
+      if (maxClass === 2 && minDim > 20 && aspectRatio < 5) triggerPhoneAlarm();
       else continue;
 
       const color = YOLO_COLORS[maxClass];
